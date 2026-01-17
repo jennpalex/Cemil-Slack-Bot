@@ -98,7 +98,7 @@ class VotingService:
 
         except Exception as e:
             logger.error(f"[X] VotingService.cast_vote hatası: {e}")
-            return {"success": False, "message": "Oy işlenirken teknik bir hata oluştu."}
+            return {"success": False, "message": "Oy pusulanda bir sorun çıktı, tekrar dener misin? 🗳️"}
 
     async def close_poll(self, channel_id: str, poll_id: str):
         """Oylamayı kapatır ve sonuçları açıklar."""

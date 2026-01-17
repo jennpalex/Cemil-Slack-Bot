@@ -120,7 +120,7 @@ class KnowledgeService:
 
         except Exception as e:
             logger.error(f"[X] KnowledgeService.ask_question hatası: {e}")
-            return "Zeka katmanımda teknik bir sorun oluştu, lütfen daha sonra tekrar dene. [X]"
+            return "Şu an hafızamı toparlamakta zorlanıyorum, birazdan tekrar sorar mısın? 🧠✨"
 
     def model_search_context(self, question: str) -> List[Dict]:
         """Vektör veritabanından bağlamı çeker."""

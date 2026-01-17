@@ -150,7 +150,7 @@ def handle_coffee_command(ack, body):
             chat_manager.post_ephemeral(
                 channel=channel_id,
                 user=user_id,
-                text="❌ Kahve isteğiniz işlenirken bir hata oluştu."
+                text="Kahve makinesinde ufak bir arıza var sanırım ☕😅 Lütfen birazdan tekrar dene."
             )
     
     asyncio.create_task(process_coffee_request())
@@ -200,7 +200,7 @@ def handle_poll_command(ack, body):
         chat_manager.post_ephemeral(
             channel=channel_id,
             user=user_id,
-            text=f"⚠️ Hatalı format! Kullanım: `/oylama [Dakika] [Konu] | Seçenek 1 | Seçenek 2`"
+            text=f"Eyvah, oylama formatı biraz karıştı! 📝 Şöyle dener misin:\n`/oylama [Dakika] [Konu] | Seçenek 1 | Seçenek 2`"
         )
     except Exception as e:
         logger.error(f"[X] Oylama başlatma hatası: {e}")
@@ -247,7 +247,7 @@ def handle_feedback_command(ack, body):
         chat_manager.post_ephemeral(
             channel=channel_id,
             user=user_id,
-            text="⚠️ Lütfen bir mesaj yazın. Örn: `/geri-bildirim genel Harika bir topluluk!`"
+            text="🤔 Hangi konuda geri bildirim vermek istersin? Örnek: `/geri-bildirim genel Harika bir topluluk!`"
         )
         return
     
@@ -282,7 +282,7 @@ def handle_ask_command(ack, body):
         chat_manager.post_ephemeral(
             channel=channel_id,
             user=user_id,
-            text="⚠️ Lütfen bir soru yazın. Örn: `/sor Mentorluk başvuruları ne zaman?`"
+            text="🤔 Neyi merak ediyorsun? Örnek: `/sor Mentorluk başvuruları ne zaman?`"
         )
         return
     
@@ -349,7 +349,7 @@ def handle_register_command(ack, body):
         chat_manager.post_ephemeral(
             channel=channel_id,
             user=user_id,
-            text="⚠️ Kullanım: `/kayit [Ad] [Soyad] [Departman] [Doğum_Tarihi]`\nÖrnek: `/kayit Ahmet Yılmaz Yazılım 1990-05-15`"
+            text="Kayıt formatında eksikler var gibi. 📝 Şöyle dener misin:\n`/kayit Ahmet Yılmaz Yazılım 1990-05-15`"
         )
         return
     
@@ -390,7 +390,7 @@ def handle_register_command(ack, body):
         chat_manager.post_ephemeral(
             channel=channel_id,
             user=user_id,
-            text="❌ Kayıt sırasında bir hata oluştu."
+            text="Kayıt defterine ulaşırken bir sorun yaşadım. 📝 Lütfen bilgilerini kontrol edip tekrar dener misin?"
         )
 
 # ============================================================================
@@ -399,10 +399,23 @@ def handle_register_command(ack, body):
 
 @app.error
 def global_error_handler(error, body, logger):
-    """Tüm beklenmedik hataları yakalar."""
+    """Tüm beklenmedik hataları yakalar ve loglar."""
     user_id = body.get("user", {}).get("id") or body.get("user_id", "Bilinmiyor")
+    channel_id = body.get("channel", {}).get("id") or body.get("channel_id")
     trigger = body.get("command") or body.get("action_id") or "N/A"
+    
     logger.error(f"[X] GLOBAL HATA - Kullanıcı: {user_id} - Tetikleyici: {trigger} - Hata: {error}")
+    
+    # Kullanıcıya bilgi ver (Eğer kanal bilgisi varsa)
+    if channel_id and user_id != "Bilinmiyor":
+        try:
+            chat_manager.post_ephemeral(
+                channel=channel_id,
+                user=user_id,
+                text="Şu an küçük bir teknik aksaklık yaşıyorum, biraz başım döndü. 🤕 Lütfen birkaç dakika sonra tekrar dener misin?"
+            )
+        except Exception:
+            pass # Hata mesajı gönderirken hata oluşursa yut
 
 # ============================================================================
 # BOT BAŞLATMA
