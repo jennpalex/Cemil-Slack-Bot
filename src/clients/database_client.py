@@ -64,6 +64,33 @@ class DatabaseClient(metaclass=SingletonMeta):
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+
+                # Oylama Başlıkları Tablosu (Polls)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS polls (
+                        id TEXT PRIMARY KEY,
+                        topic TEXT,
+                        options TEXT, -- JSON formatında seçenekler
+                        result_summary TEXT, -- Oylama bittiğinde LLM özeti veya ham sonuç
+                        creator_id TEXT,
+                        allow_multiple INTEGER DEFAULT 0, -- Çoklu oy opsiyonu
+                        is_closed INTEGER DEFAULT 0,
+                        expires_at TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                # Oylar Tablosu (Votes) - User & Poll Ara Tablo
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS votes (
+                        id TEXT PRIMARY KEY,
+                        poll_id TEXT,
+                        user_id TEXT,
+                        option_index INTEGER,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(poll_id, user_id, option_index)
+                    )
+                """)
                 conn.commit()
                 logger.debug("[i] Veritabanı tabloları kontrol edildi.")
         except sqlite3.Error as e:
