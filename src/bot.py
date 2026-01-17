@@ -1,0 +1,527 @@
+#!/usr/bin/env python3
+"""
+Cemil Bot - Topluluk Etkileşim Asistanı
+Ana bot dosyası: Tüm servislerin entegrasyonu ve slash komutları
+"""
+
+import os
+import asyncio
+from dotenv import load_dotenv
+from slack_bolt import App
+from slack_bolt.adapter.socket_mode import SocketModeHandler
+
+# --- Core & Clients ---
+from src.core.logger import logger
+from src.clients import (
+    DatabaseClient,
+    GroqClient,
+    CronClient,
+    VectorClient,
+    SMTPClient
+)
+
+# --- Commands (Slack API Wrappers) ---
+from src.commands import (
+    ChatManager,
+    ConversationManager,
+    UserManager
+)
+
+# --- Repositories ---
+from src.repositories import (
+    UserRepository,
+    MatchRepository,
+    PollRepository,
+    VoteRepository,
+    FeedbackRepository
+)
+
+# --- Services ---
+from src.services import (
+    CoffeeMatchService,
+    VotingService,
+    BirthdayService,
+    FeedbackService,
+    KnowledgeService
+)
+
+# ============================================================================
+# KONFIGÜRASYON
+# ============================================================================
+
+load_dotenv()
+
+# Slack App Başlatma
+app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
+
+# ============================================================================
+# CLIENT İLKLENDİRME (Singleton Pattern)
+# ============================================================================
+
+logger.info("[i] Client'lar ilklendiriliyor...")
+db_client = DatabaseClient()
+groq_client = GroqClient()
+cron_client = CronClient()
+vector_client = VectorClient()
+smtp_client = SMTPClient()
+logger.info("[+] Client'lar hazır.")
+
+# ============================================================================
+# COMMAND MANAGER İLKLENDİRME
+# ============================================================================
+
+logger.info("[i] Command Manager'lar ilklendiriliyor...")
+chat_manager = ChatManager(app.client)
+conv_manager = ConversationManager(app.client)
+user_manager = UserManager(app.client)
+logger.info("[+] Command Manager'lar hazır.")
+
+# ============================================================================
+# REPOSITORY İLKLENDİRME
+# ============================================================================
+
+logger.info("[i] Repository'ler ilklendiriliyor...")
+user_repo = UserRepository(db_client)
+match_repo = MatchRepository(db_client)
+poll_repo = PollRepository(db_client)
+vote_repo = VoteRepository(db_client)
+feedback_repo = FeedbackRepository(db_client)
+logger.info("[+] Repository'ler hazır.")
+
+# ============================================================================
+# SERVİS İLKLENDİRME
+# ============================================================================
+
+logger.info("[i] Servisler ilklendiriliyor...")
+coffee_service = CoffeeMatchService(
+    chat_manager, conv_manager, groq_client, cron_client, match_repo
+)
+voting_service = VotingService(
+    chat_manager, poll_repo, vote_repo, cron_client
+)
+birthday_service = BirthdayService(
+    chat_manager, user_repo, cron_client
+)
+feedback_service = FeedbackService(
+    chat_manager, smtp_client, feedback_repo
+)
+knowledge_service = KnowledgeService(
+    vector_client, groq_client
+)
+logger.info("[+] Servisler hazır.")
+
+# ============================================================================
+# YARDIMCI FONKSİYONLAR
+# ============================================================================
+
+def is_admin(user_id: str) -> bool:
+    """Kullanıcının admin olup olmadığını kontrol eder."""
+    try:
+        res = app.client.users_info(user=user_id)
+        if res["ok"]:
+            user = res["user"]
+            return user.get("is_admin", False) or user.get("is_owner", False)
+    except Exception as e:
+        logger.error(f"[X] Yetki kontrolü hatası: {e}")
+    return False
+
+# ============================================================================
+# SLASH KOMUTLARI
+# ============================================================================
+
+# --- 1. Kahve Eşleşmesi ---
+@app.command("/kahve")
+def handle_coffee_command(ack, body, client):
+    """Kahve eşleşmesi daveti gönderir."""
+    ack()
+    user_id = body["user_id"]
+    channel_id = body["channel_id"]
+    
+    try:
+        user_info = user_manager.get_user_info(user_id)
+        user_name = user_info.get("real_name", "Topluluk Üyemiz")
+        
+        chat_manager.post_message(
+            channel=channel_id,
+            text=f"☕ {user_name} kahve molası vermek istiyor!",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"☕ *{user_name}* topluluğumuzla kahve molası vermek istiyor! \\nEşlik etmek ister misin?"
+                    }
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Birlikte İçelim! ☕"},
+                            "style": "primary",
+                            "value": user_id,
+                            "action_id": "join_coffee"
+                        }
+                    ]
+                }
+            ]
+        )
+        logger.info(f"[+] Kahve daveti gönderildi: {user_name} ({user_id})")
+    except Exception as e:
+        logger.error(f"[X] Kahve daveti hatası: {e}")
+        chat_manager.post_ephemeral(
+            channel=channel_id, 
+            user=user_id, 
+            text="❌ Davet oluşturulurken bir hata oluştu."
+        )
+
+@app.action("join_coffee")
+def handle_join_coffee(ack, body):
+    """Kahve davetine katılımı işler."""
+    ack()
+    user2_id = body["user"]["id"]
+    user1_id = body["actions"][0]["value"]
+    channel_id = body["channel"]["id"]
+    message_ts = body["container"]["message_ts"]
+    
+    if user1_id == user2_id:
+        chat_manager.post_ephemeral(
+            channel=channel_id,
+            user=user2_id,
+            text="Bu davete şimdilik sadece topluluk üyelerimiz katılabilir. ✨"
+        )
+        return
+    
+    try:
+        u1_info = user_manager.get_user_info(user1_id)
+        u2_info = user_manager.get_user_info(user2_id)
+        u1_name = u1_info.get("real_name", "Kullanıcı 1")
+        u2_name = u2_info.get("real_name", "Kullanıcı 2")
+        
+        # Daveti kapat
+        chat_manager.update_message(
+            channel=channel_id,
+            ts=message_ts,
+            text="Kahve eşleşmesi tamamlandı! ✨",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"✅ *{u1_name}* ve *{u2_name}* kahve molasında buluştu! \\nKeyifli paylaşımlar dileriz. ✨☕"
+                    }
+                }
+            ]
+        )
+        
+        # Eşleşmeyi başlat (async)
+        asyncio.create_task(coffee_service.start_match(user1_id, user2_id))
+        logger.info(f"[+] Kahve eşleşmesi: {u1_name} & {u2_name}")
+        
+    except Exception as e:
+        logger.error(f"[X] Kahve eşleşme hatası: {e}")
+
+# --- 2. Oylama Sistemi ---
+@app.command("/oylama")
+def handle_poll_command(ack, body):
+    """Yeni bir oylama başlatır (Sadece adminler)."""
+    ack()
+    user_id = body["user_id"]
+    channel_id = body["channel_id"]
+    text = body.get("text", "").strip()
+    
+    if not is_admin(user_id):
+        chat_manager.post_ephemeral(
+            channel=channel_id, 
+            user=user_id, 
+            text="🚫 Bu komutu sadece adminler kullanabilir."
+        )
+        return
+    
+    try:
+        # Format: /oylama 10 Bugün ne yiyelim? | Kebap | Pizza
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            raise ValueError("Eksik parametre")
+        
+        minutes = int(parts[0])
+        content_parts = parts[1].split("|")
+        
+        if len(content_parts) < 3:
+            raise ValueError("En az iki seçenek gerekli")
+        
+        topic = content_parts[0].strip()
+        options = [opt.strip() for opt in content_parts[1:]]
+        
+        # Async servisi çağır
+        asyncio.create_task(
+            voting_service.create_poll(
+                channel_id, topic, options, user_id, 
+                allow_multiple=False, duration_minutes=minutes
+            )
+        )
+        logger.info(f"[+] Oylama başlatıldı: {topic} ({minutes}dk)")
+        
+    except ValueError as ve:
+        chat_manager.post_ephemeral(
+            channel=channel_id,
+            user=user_id,
+            text=f"⚠️ Hatalı format! Kullanım: `/oylama [Dakika] [Konu] | Seçenek 1 | Seçenek 2`"
+        )
+    except Exception as e:
+        logger.error(f"[X] Oylama başlatma hatası: {e}")
+
+@app.action("poll_vote_0")
+@app.action("poll_vote_1")
+@app.action("poll_vote_2")
+@app.action("poll_vote_3")
+@app.action("poll_vote_4")
+def handle_poll_vote(ack, body):
+    """Oylama butonlarına tıklamayı işler."""
+    ack()
+    user_id = body["user"]["id"]
+    action_id = body["actions"][0]["action_id"]
+    value = body["actions"][0]["value"]
+    channel_id = body["channel"]["id"]
+    
+    # value formatı: vote_{poll_id}_{option_index}
+    parts = value.split("_")
+    if len(parts) != 3:
+        return
+    
+    poll_id = parts[1]
+    option_index = int(parts[2])
+    
+    result = voting_service.cast_vote(poll_id, user_id, option_index)
+    
+    chat_manager.post_ephemeral(
+        channel=channel_id,
+        user=user_id,
+        text=result["message"]
+    )
+
+# --- 3. Geri Bildirim ---
+@app.command("/geri-bildirim")
+def handle_feedback_command(ack, body):
+    """Anonim geri bildirim gönderir."""
+    ack()
+    user_id = body["user_id"]
+    channel_id = body["channel_id"]
+    text = body.get("text", "").strip()
+    
+    if not text:
+        chat_manager.post_ephemeral(
+            channel=channel_id,
+            user=user_id,
+            text="⚠️ Lütfen bir mesaj yazın. Örn: `/geri-bildirim genel Harika bir topluluk!`"
+        )
+        return
+    
+    # Format: /geri-bildirim [kategori] [mesaj]
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        category = "general"
+        content = parts[0]
+    else:
+        category = parts[0]
+        content = parts[1]
+    
+    asyncio.create_task(feedback_service.submit_feedback(content, category))
+    
+    chat_manager.post_ephemeral(
+        channel=channel_id,
+        user=user_id,
+        text="✅ Geri bildiriminiz anonim olarak iletildi. Teşekkürler!"
+    )
+    logger.info(f"[+] Anonim geri bildirim alındı (Kategori: {category})")
+
+# --- 4. Bilgi Küpü (RAG) ---
+@app.command("/sor")
+def handle_ask_command(ack, body):
+    """Bilgi küpünden soru sorar."""
+    ack()
+    user_id = body["user_id"]
+    channel_id = body["channel_id"]
+    question = body.get("text", "").strip()
+    
+    if not question:
+        chat_manager.post_ephemeral(
+            channel=channel_id,
+            user=user_id,
+            text="⚠️ Lütfen bir soru yazın. Örn: `/sor Mentorluk başvuruları ne zaman?`"
+        )
+        return
+    
+    chat_manager.post_ephemeral(
+        channel=channel_id,
+        user=user_id,
+        text="🔍 Bilgi küpümü tarıyorum, lütfen bekleyin..."
+    )
+    
+    async def ask_and_respond():
+        answer = await knowledge_service.ask_question(question)
+        chat_manager.post_message(
+            channel=channel_id,
+            text=f"<@{user_id}> sordu: *{question}*\n\n{answer}"
+        )
+    
+    asyncio.create_task(ask_and_respond())
+
+@app.command("/cemil-indeksle")
+def handle_reindex_command(ack, body):
+    """Bilgi küpünü yeniden indeksler (Admin)."""
+    ack()
+    user_id = body["user_id"]
+    channel_id = body["channel_id"]
+    
+    if not is_admin(user_id):
+        chat_manager.post_ephemeral(
+            channel=channel_id,
+            user=user_id,
+            text="🚫 Bu komutu sadece adminler kullanabilir."
+        )
+        return
+    
+    chat_manager.post_ephemeral(
+        channel=channel_id,
+        user=user_id,
+        text="⚙️ Bilgi küpü yeniden taranıyor..."
+    )
+    
+    async def reindex_and_notify():
+        await knowledge_service.process_knowledge_base()
+        chat_manager.post_message(
+            channel=channel_id,
+            text=f"✅ <@{user_id}> Bilgi küpü güncellendi! Cemil artık en güncel dökümanları biliyor."
+        )
+    
+    asyncio.create_task(reindex_and_notify())
+
+# --- 5. Kullanıcı Kaydı ---
+@app.command("/kayit")
+def handle_register_command(ack, body):
+    """Kullanıcı kaydı oluşturur/günceller."""
+    ack()
+    user_id = body["user_id"]
+    channel_id = body["channel_id"]
+    text = body.get("text", "").strip()
+    
+    # Format: /kayit [Ad] [Soyad] [Departman] [Doğum Tarihi (YYYY-MM-DD)]
+    parts = text.split()
+    if len(parts) < 4:
+        chat_manager.post_ephemeral(
+            channel=channel_id,
+            user=user_id,
+            text="⚠️ Kullanım: `/kayit [Ad] [Soyad] [Departman] [Doğum_Tarihi]`\nÖrnek: `/kayit Ahmet Yılmaz Yazılım 1990-05-15`"
+        )
+        return
+    
+    first_name = parts[0]
+    surname = parts[1]
+    department = parts[2]
+    birthday = parts[3]
+    
+    try:
+        # Kullanıcıyı veritabanına ekle/güncelle
+        existing = user_repo.get_by_slack_id(user_id)
+        if existing:
+            user_repo.update_by_slack_id(user_id, {
+                "first_name": first_name,
+                "surname": surname,
+                "full_name": f"{first_name} {surname}",
+                "birthday": birthday
+            })
+        else:
+            user_repo.create({
+                "slack_id": user_id,
+                "first_name": first_name,
+                "surname": surname,
+                "full_name": f"{first_name} {surname}",
+                "birthday": birthday
+            })
+        
+        chat_manager.post_ephemeral(
+            channel=channel_id,
+            user=user_id,
+            text=f"✅ Kaydınız güncellendi!\n*Ad Soyad:* {first_name} {surname}\n*Doğum Tarihi:* {birthday}"
+        )
+        logger.info(f"[+] Kullanıcı kaydı: {first_name} {surname} ({user_id})")
+        
+    except Exception as e:
+        logger.error(f"[X] Kullanıcı kayıt hatası: {e}")
+        chat_manager.post_ephemeral(
+            channel=channel_id,
+            user=user_id,
+            text="❌ Kayıt sırasında bir hata oluştu."
+        )
+
+# ============================================================================
+# GLOBAL HATA YÖNETİMİ
+# ============================================================================
+
+@app.error
+def global_error_handler(error, body, logger):
+    """Tüm beklenmedik hataları yakalar."""
+    user_id = body.get("user", {}).get("id") or body.get("user_id", "Bilinmiyor")
+    trigger = body.get("command") or body.get("action_id") or "N/A"
+    logger.error(f"[X] GLOBAL HATA - Kullanıcı: {user_id} - Tetikleyici: {trigger} - Hata: {error}")
+
+# ============================================================================
+# BOT BAŞLATMA
+# ============================================================================
+
+if __name__ == "__main__":
+    print("\n" + "="*60)
+    print("           CEMIL BOT - BAŞLATMA SIRASI")
+    print("="*60 + "\n")
+    
+    # 1. Veritabanı İlklendirme
+    logger.info("[>] Veritabanı kontrol ediliyor...")
+    db_client.init_db()
+    
+    # 2. Cron Başlatma
+    logger.info("[>] Zamanlayıcı başlatılıyor...")
+    cron_client.start()
+    
+    # 3. Birthday Scheduler Ekleme
+    logger.info("[>] Günlük doğum günü kontrolü planlanıyor...")
+    birthday_service.schedule_daily_check(hour=9, minute=0)
+    
+    # 4. RAG İndeksleme
+    logger.info("[>] Bilgi Küpü indeksleniyor...")
+    asyncio.run(knowledge_service.process_knowledge_base())
+    
+    # 5. Slack Socket Mode Başlatma
+    app_token = os.environ.get("SLACK_APP_TOKEN")
+    if not app_token:
+        logger.error("[X] SLACK_APP_TOKEN bulunamadı!")
+        exit(1)
+    
+    logger.info("[>] Slack Socket Mode başlatılıyor...")
+    
+    # Başlangıç mesajı (isteğe bağlı)
+    startup_channel = os.environ.get("SLACK_STARTUP_CHANNEL")
+    if startup_channel:
+        try:
+            chat_manager.post_message(
+                channel=startup_channel,
+                text=(
+                    "Merhabalar! Ben Cemil, yeni uyandım ve görevimin başındayım. ☀️\\n\\n"
+                    "Topluluk etkileşimini artırmak için buradayım! İşte yapabileceklerim:\\n"
+                    "• `/kahve` - Rastgele bir çalışma arkadaşınla eşleş ☕\\n"
+                    "• `/oylama` - Hızlı anketler başlat (Admin) 🗳️\\n"
+                    "• `/geri-bildirim` - Anonim geri bildirim gönder 📝\\n"
+                    "• `/sor` - Bilgi küpümden soru sor 🔍\\n"
+                    "• `/kayit` - Profilini güncelle 👤\\n\\n"
+                    "Güzel bir gün dilerim! ✨"
+                )
+            )
+        except Exception as e:
+            logger.error(f"[X] Başlangıç mesajı gönderilemedi: {e}")
+    
+    print("\n" + "="*60)
+    print("           BOT HAZIR - BAĞLANTI KURULUYOR")
+    print("="*60 + "\n")
+    
+    handler = SocketModeHandler(app, app_token)
+    handler.start()
