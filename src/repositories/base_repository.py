@@ -54,12 +54,16 @@ class BaseRepository:
         set_clause = ", ".join([f"{key} = ?" for key in data.keys()])
         values = list(data.values()) + [record_id]
 
-        # Eğer tabloda updated_at varsa onu da ekle (isteğe bağlı otomatik yönetim)
-        # Not: SQLite tablosunda DEFAULT CURRENT_TIMESTAMP olması önerilir.
-
+        # Eğer tabloda updated_at varsa onu da otomatik güncelle
         try:
             with self.db_client.get_connection() as conn:
                 cursor = conn.cursor()
+                # Tabloda updated_at kolonu var mı kontrol et
+                cursor.execute(f"PRAGMA table_info({self.table_name})")
+                columns = [col[1] for col in cursor.fetchall()]
+                if 'updated_at' in columns and 'updated_at' not in data:
+                    set_clause += ", updated_at = CURRENT_TIMESTAMP"
+                
                 sql = f"UPDATE {self.table_name} SET {set_clause} WHERE id = ?"
                 cursor.execute(sql, values)
                 conn.commit()

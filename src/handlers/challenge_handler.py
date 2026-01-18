@@ -3,6 +3,7 @@ Challenge Hub komut handler'ları.
 """
 
 import asyncio
+import re
 from slack_bolt import App
 from src.core.logger import logger
 from src.core.settings import get_settings
@@ -42,10 +43,11 @@ def setup_challenge_handlers(
                 user=user_id,
                 text=(
                     "📋 *Challenge Komutları:*\n\n"
-                    "`/challenge start <takım> \"<tema>\" [süre] [zorluk]` - Yeni challenge başlat\n"
+                    "`/challenge start <takım>` - Yeni challenge başlat (tema ve proje random seçilir)\n"
                     "`/challenge join [challenge_id]` - Challenge'a katıl\n"
                     "`/challenge status` - Challenge durumunu görüntüle\n\n"
-                    "Örnek: `/challenge start 4 \"AI Chatbot\" 48 intermediate`"
+                    "Örnek: `/challenge start 4`\n\n"
+                    "💡 *Not:* Tema ve proje takım dolunca otomatik olarak random seçilir."
                 )
             )
             return
@@ -68,7 +70,14 @@ def setup_challenge_handlers(
             chat_manager.post_ephemeral(
                 channel=channel_id,
                 user=user_id,
-                text=error_msg
+                text=error_msg,
+                blocks=[{
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": error_msg
+                    }
+                }]
             )
             return
 
@@ -82,42 +91,61 @@ def setup_challenge_handlers(
             chat_manager.post_ephemeral(
                 channel=channel_id,
                 user=user_id,
-                text=f"❌ Bilinmeyen komut: {subcommand}"
+                text=f"❌ Bilinmeyen komut: {subcommand}",
+                blocks=[{
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"❌ Bilinmeyen komut: {subcommand}"
+                    }
+                }]
             )
 
     def handle_start_challenge(text: str, user_id: str, channel_id: str):
-        """Challenge başlatma."""
+        """Challenge başlatma - Sadece kişi sayısı."""
         try:
             request = ChallengeStartRequest.parse_from_text(text)
         except ValueError as ve:
             chat_manager.post_ephemeral(
                 channel=channel_id,
                 user=user_id,
-                text=f"❌ Format hatası: {str(ve)}\n\nÖrnek: `/challenge start 4 \"AI Chatbot\" 48 intermediate`"
+                text=f"❌ Format hatası: {str(ve)}\n\nÖrnek: `/challenge start 4`"
             )
             return
 
         async def process_start():
             result = await challenge_service.start_challenge(
                 creator_id=user_id,
-                theme=request.theme,
                 team_size=request.team_size,
-                deadline_hours=request.deadline_hours,
-                difficulty=request.difficulty,
                 channel_id=channel_id  # Mesajı komutun çalıştırıldığı kanala gönder
             )
 
             if result["success"]:
+                # \n karakterlerinin çalışması için blocks kullan
                 chat_manager.post_ephemeral(
                     channel=channel_id,
                     user=user_id,
-                    text=result["message"]
+                    text=result["message"],
+                    blocks=[{
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": result["message"]
+                        }
+                    }]
                 )
             else:
                 chat_manager.post_ephemeral(
                     channel=channel_id,
                     user=user_id,
-                    text=result["message"]
+                    text=result["message"],
+                    blocks=[{
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": result["message"]
+                        }
+                    }]
                 )
 
         asyncio.run(process_start())
@@ -130,7 +158,14 @@ def setup_challenge_handlers(
             chat_manager.post_ephemeral(
                 channel=channel_id,
                 user=user_id,
-                text=f"❌ Format hatası: {str(ve)}"
+                text=f"❌ Format hatası: {str(ve)}",
+                blocks=[{
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"❌ Format hatası: {str(ve)}"
+                    }
+                }]
             )
             return
 
@@ -141,10 +176,18 @@ def setup_challenge_handlers(
             )
 
             if result["success"]:
+                # \n karakterlerinin çalışması için blocks kullan
                 chat_manager.post_ephemeral(
                     channel=channel_id,
                     user=user_id,
-                    text=result["message"]
+                    text=result["message"],
+                    blocks=[{
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": result["message"]
+                        }
+                    }]
                 )
             else:
                 error_msg = result["message"]
@@ -158,7 +201,14 @@ def setup_challenge_handlers(
                 chat_manager.post_ephemeral(
                     channel=channel_id,
                     user=user_id,
-                    text=error_msg
+                    text=error_msg,
+                    blocks=[{
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": error_msg
+                        }
+                    }]
                 )
 
         asyncio.run(process_join())
@@ -166,7 +216,7 @@ def setup_challenge_handlers(
     def handle_challenge_status(user_id: str, channel_id: str):
         """Challenge durumunu göster."""
         async def process_status():
-            # Kullanıcının aktif challenge'ını bul
+            # Kullanıcının aktif challenge'ını bul (katılımcı olarak VEYA creator olarak)
             from src.repositories import ChallengeParticipantRepository, ChallengeHubRepository
             from src.clients import DatabaseClient
             from src.core.settings import get_settings
@@ -176,13 +226,38 @@ def setup_challenge_handlers(
             participant_repo = ChallengeParticipantRepository(db_client)
             hub_repo = ChallengeHubRepository(db_client)
             
+            # Önce katılımcı olarak bak
             active_challenges = participant_repo.get_user_active_challenges(user_id)
+            
+            # Katılımcı olarak bulamadıysa, creator olarak bak
+            if not active_challenges:
+                # Creator olarak aktif challenge'ları bul
+                try:
+                    with db_client.get_connection() as conn:
+                        cursor = conn.cursor()
+                        sql = """
+                            SELECT * FROM challenge_hubs
+                            WHERE creator_id = ? AND status IN ('recruiting', 'active')
+                            ORDER BY created_at DESC
+                        """
+                        cursor.execute(sql, (user_id,))
+                        rows = cursor.fetchall()
+                        active_challenges = [dict(row) for row in rows]
+                except Exception as e:
+                    logger.error(f"[X] Creator challenge'ları alınırken hata: {e}")
             
             if not active_challenges:
                 chat_manager.post_ephemeral(
                     channel=channel_id,
                     user=user_id,
-                    text="ℹ️ Aktif challenge'ınız yok. `/challenge start` ile yeni challenge başlatabilirsiniz."
+                    text="ℹ️ Aktif challenge'ınız yok. `/challenge start` ile yeni challenge başlatabilirsiniz.",
+                    blocks=[{
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "ℹ️ Aktif challenge'ınız yok. `/challenge start` ile yeni challenge başlatabilirsiniz."
+                        }
+                    }]
                 )
                 return
             
@@ -210,7 +285,14 @@ def setup_challenge_handlers(
             chat_manager.post_ephemeral(
                 channel=channel_id,
                 user=user_id,
-                text=status_text
+                text=status_text,
+                blocks=[{
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": status_text
+                    }
+                }]
             )
         
         asyncio.run(process_status())
@@ -219,16 +301,38 @@ def setup_challenge_handlers(
     def handle_challenge_join_button(ack, body):
         """Challenge'a katıl butonuna tıklama."""
         ack()
+        
+        # Payload'ı logla (debug için)
+        import json
+        logger.debug(f"[DEBUG] Challenge join button payload: {json.dumps(body, indent=2, ensure_ascii=False)}")
+        
         user_id = body["user"]["id"]
         channel_id = body["channel"]["id"]
-        challenge_id = body["actions"][0]["value"]
         
-        # Eğer zaten katıldıysa
-        if challenge_id == "joined":
+        # Action'dan challenge_id'yi al
+        actions = body.get("actions", [])
+        if not actions:
+            logger.warning(f"[!] Challenge join button payload'ında action bulunamadı: {body}")
+            return
+        
+        action = actions[0]
+        challenge_id = action.get("value")
+        action_id = action.get("action_id", "")
+        
+        # Eğer action_id "challenge_join_button" değilse (Slack'in otomatik oluşturduğu action_id olabilir)
+        # veya value "joined" ise, zaten katıldı demektir
+        if challenge_id == "joined" or (action_id != "challenge_join_button" and challenge_id == "joined"):
             chat_manager.post_ephemeral(
                 channel=channel_id,
                 user=user_id,
-                text="✅ Zaten bu challenge'a katıldınız."
+                text="✅ Zaten bu challenge'a katıldınız.",
+                blocks=[{
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "✅ Zaten bu challenge'a katıldınız."
+                    }
+                }]
             )
             return
         
@@ -248,18 +352,32 @@ def setup_challenge_handlers(
             )
             
             if result["success"]:
-                # Başarılı mesajı gönder
+                # Başarılı mesajı gönder - \n karakterlerinin çalışması için blocks kullan
                 chat_manager.post_ephemeral(
                     channel=channel_id,
                     user=user_id,
-                    text=result["message"]
+                    text=result["message"],
+                    blocks=[{
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": result["message"]
+                        }
+                    }]
                 )
                 
                 # Mesajı güncelle - butonu disable et ve katılımcı sayısını güncelle
                 try:
                     import copy
-                    message_ts = body["message"]["ts"]
-                    blocks = copy.deepcopy(body["message"]["blocks"])
+                    message_ts = body.get("message", {}).get("ts")
+                    if not message_ts:
+                        logger.debug("[i] Mesaj timestamp bulunamadı, güncelleme atlanıyor")
+                        return
+                    
+                    blocks = copy.deepcopy(body["message"].get("blocks", []))
+                    if not blocks:
+                        logger.debug("[i] Mesaj blocks bulunamadı, güncelleme atlanıyor")
+                        return
                     
                     # Challenge bilgisini al (servis üzerinden)
                     from src.repositories import ChallengeHubRepository, ChallengeParticipantRepository
@@ -272,68 +390,77 @@ def setup_challenge_handlers(
                     participant_repo = ChallengeParticipantRepository(db_client)
                     
                     challenge = hub_repo.get(challenge_id)
-                    if challenge:
-                        participants = participant_repo.get_team_members(challenge_id)
-                        participant_count = len(participants)
-                        team_size = challenge["team_size"]
-                        
-                        # Butonu disable et veya kaldır
-                        updated_blocks = []
-                        for block in blocks:
-                            if block.get("type") == "actions":
-                                # Butonları güncelle
-                                updated_elements = []
-                                for element in block.get("elements", []):
-                                    if element.get("action_id") == "challenge_join_button":
-                                        if participant_count >= team_size:
-                                            # Takım doldu - butonu kaldır
-                                            continue
-                                        else:
-                                            # Butonu disable et
-                                            element["text"]["text"] = "✅ Katıldınız"
-                                            element["value"] = "joined"
-                                            element["style"] = None
-                                            element.pop("action_id", None)
-                                            updated_elements.append(element)
-                                    else:
-                                        updated_elements.append(element)
-                                
-                                if updated_elements:
-                                    block["elements"] = updated_elements
-                                    updated_blocks.append(block)
-                                # Eğer tüm butonlar kaldırıldıysa, actions block'unu ekleme
+                    if not challenge:
+                        logger.warning(f"[!] Challenge bulunamadı: {challenge_id}")
+                        return
+                    
+                    participants = participant_repo.get_team_members(challenge_id)
+                    participant_count = len(participants)
+                    team_size = challenge["team_size"]
+                    challenge_started = result.get("challenge_started", False)
+                    
+                    # Butonu güncelle: Sadece takım dolduğunda veya challenge başladığında kaldır
+                    # NOT: Butonu kullanıcıya özel yapamayız, mesaj tüm kullanıcılar için aynı!
+                    # Eğer kullanıcı zaten katıldıysa, service "ALREADY_PARTICIPATING" hatası döner.
+                    updated_blocks = []
+                    for block in blocks:
+                        if block.get("type") == "actions":
+                            # Takım dolduysa veya challenge başladıysa butonu kaldır
+                            if challenge_started or participant_count >= team_size:
+                                # Actions block'unu tamamen kaldır
+                                continue
                             else:
-                                # Context'i güncelle
-                                if block.get("type") == "context" and challenge:
-                                    block["elements"][0]["text"] = f"Challenge ID: `{challenge_id[:8]}...` | Durum: {participant_count}/{team_size} kişi"
+                                # Butonu olduğu gibi bırak (tüm kullanıcılar için aktif kalmalı)
                                 updated_blocks.append(block)
-                        
-                        # Mesajı güncelle
+                        else:
+                            # Context'i güncelle
+                            if block.get("type") == "context" and challenge:
+                                remaining = team_size - participant_count
+                                total_team = team_size + 1  # Owner + katılımcılar
+                                if challenge_started:
+                                    block["elements"][0]["text"] = f"🆔 Challenge ID: `{challenge_id[:8]}...` | 🎊 *CHALLENGE BAŞLATILDI!* (Owner + {participant_count}/{team_size} katılımcı = {total_team} kişi) | ✅ Kanal açıldı!"
+                                elif remaining > 0:
+                                    block["elements"][0]["text"] = f"🆔 Challenge ID: `{challenge_id[:8]}...` | 📊 Durum: *{participant_count}/{team_size} katılımcı* katıldı (Owner hariç) | ⏳ *{remaining} kişi* daha gerekli"
+                                else:
+                                    block["elements"][0]["text"] = f"🆔 Challenge ID: `{challenge_id[:8]}...` | 🎊 *TAKIM DOLDU!* (Owner + {participant_count}/{team_size} katılımcı = {total_team} kişi) | 🚀 Challenge başlatılıyor..."
+                            updated_blocks.append(block)
+                    
+                    # Mesajı güncelle
+                    if updated_blocks:
                         chat_manager.update_message(
                             channel=channel_id,
                             ts=message_ts,
-                            text="🔥 Yeni Challenge Açıldı!",
+                            text="🚀 YENİ CHALLENGE AÇILDI! Mini Hackathon'a katılmak için butona tıklayın!",
                             blocks=updated_blocks
                         )
+                        logger.info(f"[+] Challenge mesajı güncellendi: {message_ts}")
                 except Exception as e:
-                    logger.debug(f"[i] Mesaj güncelleme hatası (normal): {e}")
+                    logger.warning(f"[!] Mesaj güncelleme hatası: {e}", exc_info=True)
                 
             else:
+                # Hata mesajını direkt service'den al (daha detaylı ve tutarlı)
+                # Service'den gelen mesajlar zaten güzel formatlı
                 error_msg = result["message"]
-                if result.get("error_code") == "ALREADY_PARTICIPATING":
-                    error_msg = (
-                        "❌ *Zaten Bu Challenge'a Katıldınız*\n\n"
-                        "Aynı challenge'a iki kez katılamazsınız."
-                    )
-                elif result.get("error_code") == "TEAM_FULL":
-                    error_msg = "❌ Bu challenge'ın takımı dolmuş."
-                elif result.get("error_code") == "USER_HAS_ACTIVE_CHALLENGE":
-                    error_msg = "❌ Zaten aktif bir challenge'ınız var. Önce onu tamamlayın."
                 
                 chat_manager.post_ephemeral(
                     channel=channel_id,
                     user=user_id,
-                    text=error_msg
+                    text=error_msg,
+                    blocks=[{
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": error_msg
+                        }
+                    }]
                 )
         
         asyncio.run(process_join())
+    
+    # Genel handler - Slack'in otomatik oluşturduğu action_id'leri handle etmek için
+    # (örneğin, mesaj güncellenirken action_id kaldırıldığında Slack otomatik action_id oluşturur)
+    @app.action(re.compile(r"^vTXk0$|^challenge_join_button$"))
+    def handle_challenge_join_button_fallback(ack, body):
+        """Challenge join butonu için fallback handler (Slack'in otomatik oluşturduğu action_id'ler için)."""
+        # Önce normal handler'ı çağır
+        handle_challenge_join_button(ack, body)

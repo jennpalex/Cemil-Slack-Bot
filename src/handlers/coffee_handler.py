@@ -56,10 +56,18 @@ def setup_coffee_handlers(
         async def process_coffee():
             try:
                 response_msg = await coffee_service.request_coffee(user_id, channel_id, user_name)
+                # \n karakterlerinin çalışması için blocks kullan
                 chat_manager.post_ephemeral(
                     channel=channel_id,
                     user=user_id,
-                    text=response_msg
+                    text=response_msg,
+                    blocks=[{
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": response_msg
+                        }
+                    }]
                 )
             except Exception as e:
                 logger.error(f"[X] Kahve isteği hatası | Kullanıcı: {user_name} ({user_id}) | Hata: {e}", exc_info=True)

@@ -23,6 +23,13 @@ class DatabaseClient(metaclass=SingletonMeta):
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row  # Dict benzeri erişim için
+            # FOREIGN KEY desteğini etkinleştir (her connection için zorunlu)
+            conn.execute("PRAGMA foreign_keys = ON")
+            # Foreign key'lerin açık olduğunu doğrula
+            result = conn.execute("PRAGMA foreign_keys").fetchone()
+            if result and result[0] == 0:
+                logger.warning("[!] Foreign key'ler açılamadı, tekrar deniyor...")
+                conn.execute("PRAGMA foreign_keys = ON")
             return conn
         except sqlite3.Error as e:
             logger.error(f"[X] Veritabanı bağlantı hatası: {e}")
@@ -33,6 +40,9 @@ class DatabaseClient(metaclass=SingletonMeta):
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                # Foreign key'leri aç (tüm tablolar için)
+                cursor.execute("PRAGMA foreign_keys = ON")
+                
                 # Kullanıcılar Tablosu (Users)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS users (
@@ -135,17 +145,25 @@ class DatabaseClient(metaclass=SingletonMeta):
                         user2_id TEXT,
                         status TEXT DEFAULT 'active',
                         summary TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user1_id) REFERENCES users(id) ON DELETE SET NULL,
+                        FOREIGN KEY (user2_id) REFERENCES users(id) ON DELETE SET NULL
                     )
                 """)
                 
-                # Migration: coffee_channel_id kolonu yoksa ekle
+                # Migration: coffee_channel_id ve updated_at kolonları yoksa ekle
                 cursor.execute("PRAGMA table_info(matches)")
                 columns = [column[1] for column in cursor.fetchall()]
                 if 'coffee_channel_id' not in columns:
                     logger.info("[i] coffee_channel_id kolonu ekleniyor...")
                     cursor.execute("ALTER TABLE matches ADD COLUMN coffee_channel_id TEXT")
                     logger.info("[+] coffee_channel_id kolonu eklendi.")
+                if 'updated_at' not in columns:
+                    logger.info("[i] matches tablosuna updated_at kolonu ekleniyor...")
+                    # SQLite'da ALTER TABLE ile DEFAULT CURRENT_TIMESTAMP kullanılamaz, NULL ile ekle
+                    cursor.execute("ALTER TABLE matches ADD COLUMN updated_at TIMESTAMP")
+                    logger.info("[+] matches.updated_at kolonu eklendi.")
 
                 # Oylama Başlıkları Tablosu (Polls)
                 cursor.execute("""
@@ -182,7 +200,9 @@ class DatabaseClient(metaclass=SingletonMeta):
                         user_id TEXT,
                         option_index INTEGER,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(poll_id, user_id, option_index)
+                        UNIQUE(poll_id, user_id, option_index),
+                        FOREIGN KEY (poll_id) REFERENCES polls(id) ON DELETE CASCADE,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                     )
                 """)
 
@@ -209,19 +229,39 @@ class DatabaseClient(metaclass=SingletonMeta):
                         help_channel_id TEXT,
                         message_ts TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        resolved_at TIMESTAMP
+                        resolved_at TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY (helper_id) REFERENCES users(id) ON DELETE SET NULL
                     )
                 """)
                 
-                # Migration: help_channel_id kolonu yoksa ekle
+                # Migration: help_channel_id ve updated_at kolonları yoksa ekle
                 cursor.execute("PRAGMA table_info(help_requests)")
                 columns = [column[1] for column in cursor.fetchall()]
                 if 'help_channel_id' not in columns:
                     logger.info("[i] help_channel_id kolonu ekleniyor...")
                     cursor.execute("ALTER TABLE help_requests ADD COLUMN help_channel_id TEXT")
                     logger.info("[+] help_channel_id kolonu eklendi.")
+                if 'updated_at' not in columns:
+                    logger.info("[i] help_requests tablosuna updated_at kolonu ekleniyor...")
+                    # SQLite'da ALTER TABLE ile DEFAULT CURRENT_TIMESTAMP kullanılamaz, NULL ile ekle
+                    cursor.execute("ALTER TABLE help_requests ADD COLUMN updated_at TIMESTAMP")
+                    logger.info("[+] help_requests.updated_at kolonu eklendi.")
                 
                 # Challenge Hub Tabloları
+                # Foreign key'leri aç (challenge tabloları için)
+                cursor.execute("PRAGMA foreign_keys = ON")
+                
+                # Challenge tablolarını DROP edip yeniden oluştur (foreign key düzeltmeleri için)
+                # NOT: Challenge verileri startup'ta temizleniyor, bu yüzden güvenli
+                logger.info("[i] Challenge tabloları foreign key düzeltmeleri için yeniden oluşturuluyor...")
+                cursor.execute("DROP TABLE IF EXISTS challenge_submissions")
+                cursor.execute("DROP TABLE IF EXISTS challenge_participants")
+                cursor.execute("DROP TABLE IF EXISTS challenge_hubs")
+                cursor.execute("DROP TABLE IF EXISTS user_challenge_stats")
+                # challenge_themes ve challenge_projects'i DROP etme (seed data var)
+                
                 # Challenge Themes (Temalar)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS challenge_themes (
@@ -277,9 +317,20 @@ class DatabaseClient(metaclass=SingletonMeta):
                         deadline TIMESTAMP,
                         started_at TIMESTAMP,
                         completed_at TIMESTAMP,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (creator_id) REFERENCES users(slack_id) ON DELETE CASCADE
                     )
                 """)
+                
+                # Migration: updated_at kolonu yoksa ekle
+                cursor.execute("PRAGMA table_info(challenge_hubs)")
+                columns = [column[1] for column in cursor.fetchall()]
+                if 'updated_at' not in columns:
+                    logger.info("[i] challenge_hubs tablosuna updated_at kolonu ekleniyor...")
+                    # SQLite'da ALTER TABLE ile DEFAULT CURRENT_TIMESTAMP kullanılamaz, NULL ile ekle
+                    cursor.execute("ALTER TABLE challenge_hubs ADD COLUMN updated_at TIMESTAMP")
+                    logger.info("[+] challenge_hubs.updated_at kolonu eklendi.")
                 
                 # Challenge Participants (Katılımcılar)
                 cursor.execute("""
@@ -290,9 +341,21 @@ class DatabaseClient(metaclass=SingletonMeta):
                         role TEXT,
                         joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         points_earned INTEGER DEFAULT 0,
-                        UNIQUE(challenge_hub_id, user_id)
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(challenge_hub_id, user_id),
+                        FOREIGN KEY (challenge_hub_id) REFERENCES challenge_hubs(id) ON DELETE CASCADE,
+                        FOREIGN KEY (user_id) REFERENCES users(slack_id) ON DELETE CASCADE
                     )
                 """)
+                
+                # Migration: updated_at kolonu yoksa ekle
+                cursor.execute("PRAGMA table_info(challenge_participants)")
+                columns = [column[1] for column in cursor.fetchall()]
+                if 'updated_at' not in columns:
+                    logger.info("[i] challenge_participants tablosuna updated_at kolonu ekleniyor...")
+                    # SQLite'da ALTER TABLE ile DEFAULT CURRENT_TIMESTAMP kullanılamaz, NULL ile ekle
+                    cursor.execute("ALTER TABLE challenge_participants ADD COLUMN updated_at TIMESTAMP")
+                    logger.info("[+] challenge_participants.updated_at kolonu eklendi.")
                 
                 # Challenge Submissions (Takım Çıktıları)
                 cursor.execute("""
@@ -308,9 +371,20 @@ class DatabaseClient(metaclass=SingletonMeta):
                         submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         points_awarded INTEGER DEFAULT 0,
                         creativity_score INTEGER DEFAULT 0,
-                        teamwork_score INTEGER DEFAULT 0
+                        teamwork_score INTEGER DEFAULT 0,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (challenge_hub_id) REFERENCES challenge_hubs(id) ON DELETE CASCADE
                     )
                 """)
+                
+                # Migration: updated_at kolonu yoksa ekle
+                cursor.execute("PRAGMA table_info(challenge_submissions)")
+                columns = [column[1] for column in cursor.fetchall()]
+                if 'updated_at' not in columns:
+                    logger.info("[i] challenge_submissions tablosuna updated_at kolonu ekleniyor...")
+                    # SQLite'da ALTER TABLE ile DEFAULT CURRENT_TIMESTAMP kullanılamaz, NULL ile ekle
+                    cursor.execute("ALTER TABLE challenge_submissions ADD COLUMN updated_at TIMESTAMP")
+                    logger.info("[+] challenge_submissions.updated_at kolonu eklendi.")
                 
                 # User Challenge Stats (Kullanıcı İstatistikleri)
                 cursor.execute("""
@@ -323,12 +397,17 @@ class DatabaseClient(metaclass=SingletonMeta):
                         teamwork_points INTEGER DEFAULT 0,
                         favorite_theme TEXT,
                         last_challenge_date DATE,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(slack_id) ON DELETE CASCADE
                     )
                 """)
                 
                 conn.commit()
                 logger.debug("[i] Veritabanı tabloları kontrol edildi.")
+                
+                # Index'leri oluştur (performans için)
+                self._create_indexes(cursor)
+                conn.commit()
                 
                 # Seed data: Temalar ve Projeler
                 self._seed_challenge_data(cursor)
@@ -339,246 +418,473 @@ class DatabaseClient(metaclass=SingletonMeta):
             raise DatabaseError(f"Tablolar oluşturulamadı: {e}")
     
     def _seed_challenge_data(self, cursor):
-        """Challenge temaları ve projeler için seed data ekler."""
+        """Challenge temaları ve projeler için seed data ekler. Açılışta kontrol eder, yoksa ekler."""
         try:
+            # Mobile App temasını ve projelerini temizle (artık kullanılmıyor)
+            cursor.execute("DELETE FROM challenge_projects WHERE theme = 'Mobile App'")
+            deleted_projects = cursor.rowcount
+            if deleted_projects > 0:
+                logger.info(f"[i] {deleted_projects} Mobile App projesi temizlendi.")
+            
+            cursor.execute("DELETE FROM challenge_themes WHERE id = 'theme_mobile_app'")
+            if cursor.rowcount > 0:
+                logger.info("[i] Mobile App teması temizlendi.")
+            
             # Temalar
             themes = [
                 ("theme_ai_chatbot", "AI Chatbot", "Yapay zeka destekli chatbot geliştirme", "🤖", "intermediate-advanced", 1),
                 ("theme_web_app", "Web App", "Modern web uygulaması geliştirme", "🌐", "intermediate-advanced", 1),
                 ("theme_data_analysis", "Data Analysis", "Veri analizi ve görselleştirme projeleri", "📊", "intermediate", 1),
-                ("theme_mobile_app", "Mobile App", "Mobil uygulama geliştirme", "📱", "advanced", 1),
+                # Mobile App teması kaldırıldı - sadece AI ve Web App kullanılıyor
+                # ("theme_mobile_app", "Mobile App", "Mobil uygulama geliştirme", "📱", "advanced", 0),
                 ("theme_automation", "Automation", "İş süreçlerini otomatikleştirme", "⚙️", "intermediate", 1),
             ]
             
+            themes_added = 0
             for theme_id, name, desc, icon, diff_range, is_active in themes:
-                cursor.execute("""
-                    INSERT OR IGNORE INTO challenge_themes (id, name, description, icon, difficulty_range, is_active)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (theme_id, name, desc, icon, diff_range, is_active))
+                # Önce kontrol et
+                cursor.execute("SELECT id FROM challenge_themes WHERE id = ?", (theme_id,))
+                exists = cursor.fetchone()
+                
+                if not exists:
+                    cursor.execute("""
+                        INSERT INTO challenge_themes (id, name, description, icon, difficulty_range, is_active)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (theme_id, name, desc, icon, diff_range, is_active))
+                    themes_added += 1
+                    logger.debug(f"[+] Tema eklendi: {name}")
+            
+            if themes_added > 0:
+                logger.info(f"[+] {themes_added} yeni tema eklendi.")
+            else:
+                logger.debug("[i] Tüm temalar zaten mevcut.")
             
             # Projeler
             import json
             
             all_projects = [
-                # AI Chatbot - Intermediate
-                {
-                    "id": "proj_edu_assistant",
-                    "theme": "AI Chatbot",
-                    "name": "Eğitim Asistanı Chatbot",
-                    "description": "Öğrencilerin ders planı çıkaran, soru cevaplayan ve öğrenme yolculuğunu destekleyen akıllı chatbot sistemi.",
-                    "objectives": json.dumps(["Prompt tasarımı", "Akış diyagramı", "Örnek konuşmalar", "Sunum"]),
-                    "deliverables": json.dumps(["prompt", "flow_diagram", "demo_conversations", "presentation"]),
-                    "tasks": json.dumps([
-                        {"title": "Prompt Tasarımı", "description": "Chatbot'un temel prompt'unu tasarla", "estimated_hours": 8},
-                        {"title": "Akış Diyagramı", "description": "Kullanıcı etkileşim akışını tasarla", "estimated_hours": 6},
-                        {"title": "Örnek Konuşmalar", "description": "3 farklı senaryo için örnek diyaloglar", "estimated_hours": 6},
-                        {"title": "Sunum", "description": "Proje sunumu hazırla", "estimated_hours": 4}
-                    ]),
-                    "difficulty_level": "intermediate",
-                    "estimated_hours": 48,
-                    "min_team_size": 2,
-                    "max_team_size": 6
-                },
-                {
-                    "id": "proj_customer_support",
-                    "theme": "AI Chatbot",
-                    "name": "Müşteri Destek Botu",
-                    "description": "E-ticaret sitesi için müşteri sorularını yanıtlayan bot",
-                    "objectives": json.dumps(["FAQ entegrasyonu", "Ticket yönlendirme", "Kişiselleştirilmiş yanıtlar"]),
-                    "deliverables": json.dumps(["faq_database", "routing_flow", "sample_dialogues"]),
-                    "tasks": json.dumps([
-                        {"title": "FAQ Veritabanı", "description": "FAQ şeması ve içerik", "estimated_hours": 8},
-                        {"title": "Yönlendirme Akışı", "description": "Ticket yönlendirme mantığı", "estimated_hours": 6},
-                        {"title": "Örnek Diyaloglar", "description": "Farklı senaryolar için diyaloglar", "estimated_hours": 6}
-                    ]),
-                    "difficulty_level": "intermediate",
-                    "estimated_hours": 48,
-                    "min_team_size": 2,
-                    "max_team_size": 5
-                },
-                # AI Chatbot - Beginner
-                {
-                    "id": "proj_simple_greeting_bot",
-                    "theme": "AI Chatbot",
-                    "name": "Basit Karşılama Botu",
-                    "description": "Kullanıcıları karşılayan, basit sorulara yanıt veren chatbot",
-                    "objectives": json.dumps(["Basit prompt yazma", "5 örnek Q&A", "Test ve düzeltme"]),
-                    "deliverables": json.dumps(["prompt", "qa_examples", "test_results"]),
-                    "tasks": json.dumps([
-                        {"title": "Basit Prompt", "description": "Karşılama prompt'u yaz", "estimated_hours": 4},
-                        {"title": "Q&A Örnekleri", "description": "5 soru-cevap hazırla", "estimated_hours": 4},
-                        {"title": "Test", "description": "Botu test et ve düzelt", "estimated_hours": 4}
-                    ]),
-                    "difficulty_level": "beginner",
-                    "estimated_hours": 24,
-                    "min_team_size": 2,
-                    "max_team_size": 3
-                },
-                {
-                    "id": "proj_weather_bot",
-                    "theme": "AI Chatbot",
-                    "name": "Hava Durumu Botu",
-                    "description": "Hava durumu bilgisi veren basit chatbot",
-                    "objectives": json.dumps(["Hava durumu prompt'u", "Şehir bazlı sorgu akışı", "Örnek konuşmalar"]),
-                    "deliverables": json.dumps(["prompt", "flow_diagram", "sample_conversations"]),
-                    "tasks": json.dumps([
-                        {"title": "Hava Durumu Prompt'u", "description": "Hava durumu için prompt yaz", "estimated_hours": 4},
-                        {"title": "Şehir Sorgu Akışı", "description": "Şehir bazlı sorgu akışını tasarla", "estimated_hours": 4},
-                        {"title": "Örnek Konuşmalar", "description": "Farklı şehirler için örnekler", "estimated_hours": 4}
-                    ]),
-                    "difficulty_level": "beginner",
-                    "estimated_hours": 24,
-                    "min_team_size": 2,
-                    "max_team_size": 3
-                },
-                # Web App - Beginner
-                {
-                    "id": "proj_personal_notebook",
-                    "theme": "Web App",
-                    "name": "Kişisel Not Defteri",
-                    "description": "Basit not ekleme, listeleme, silme uygulaması",
-                    "objectives": json.dumps(["UI tasarımı", "CRUD işlemleri", "Local storage entegrasyonu", "Test"]),
-                    "deliverables": json.dumps(["html_css_js_files", "working_demo", "documentation"]),
-                    "tasks": json.dumps([
-                        {"title": "UI Tasarımı", "description": "Basit arayüz tasarla", "estimated_hours": 6},
-                        {"title": "CRUD İşlemleri", "description": "Not ekleme, listeleme, silme", "estimated_hours": 8},
-                        {"title": "Local Storage", "description": "Notları kaydetme", "estimated_hours": 4},
-                        {"title": "Test", "description": "Uygulamayı test et", "estimated_hours": 4}
-                    ]),
-                    "difficulty_level": "beginner",
-                    "estimated_hours": 36,
-                    "min_team_size": 2,
-                    "max_team_size": 4
-                },
-                {
-                    "id": "proj_simple_calculator",
-                    "theme": "Web App",
-                    "name": "Basit Hesap Makinesi",
-                    "description": "Web tabanlı hesap makinesi uygulaması",
-                    "objectives": json.dumps(["UI tasarımı", "Matematik işlemleri", "Hata yönetimi"]),
-                    "deliverables": json.dumps(["calculator_html", "working_calculator", "test_cases"]),
-                    "tasks": json.dumps([
-                        {"title": "UI Tasarımı", "description": "Hesap makinesi arayüzü", "estimated_hours": 4},
-                        {"title": "Matematik İşlemleri", "description": "Toplama, çıkarma, çarpma, bölme", "estimated_hours": 6},
-                        {"title": "Hata Yönetimi", "description": "Sıfıra bölme gibi hataları yakala", "estimated_hours": 4}
-                    ]),
-                    "difficulty_level": "beginner",
-                    "estimated_hours": 24,
-                    "min_team_size": 2,
-                    "max_team_size": 3
-                },
-                # Data Analysis - Beginner
-                {
-                    "id": "proj_simple_data_viz",
-                    "theme": "Data Analysis",
-                    "name": "Basit Veri Görselleştirme",
-                    "description": "CSV dosyasından veri okuyup grafik oluşturma",
-                    "objectives": json.dumps(["CSV okuma", "Basit istatistikler", "Grafik oluşturma", "Rapor hazırlama"]),
-                    "deliverables": json.dumps(["python_script", "sample_graphs", "analysis_report"]),
-                    "tasks": json.dumps([
-                        {"title": "CSV Okuma", "description": "CSV dosyasını oku ve parse et", "estimated_hours": 6},
-                        {"title": "Basit İstatistikler", "description": "Ortalama, min, max hesapla", "estimated_hours": 6},
-                        {"title": "Grafik Oluşturma", "description": "Matplotlib ile grafik çiz", "estimated_hours": 8},
-                        {"title": "Rapor Hazırlama", "description": "Analiz raporu yaz", "estimated_hours": 4}
-                    ]),
-                    "difficulty_level": "beginner",
-                    "estimated_hours": 36,
-                    "min_team_size": 2,
-                    "max_team_size": 4
-                },
-                {
-                    "id": "proj_survey_analysis",
-                    "theme": "Data Analysis",
-                    "name": "Basit Anket Analizi",
-                    "description": "Anket sonuçlarını analiz eden basit sistem",
-                    "objectives": json.dumps(["Veri toplama planı", "Basit analiz", "Görselleştirme"]),
-                    "deliverables": json.dumps(["analysis_script", "charts", "summary_report"]),
-                    "tasks": json.dumps([
-                        {"title": "Veri Toplama Planı", "description": "Anket verilerini organize et", "estimated_hours": 4},
-                        {"title": "Basit Analiz", "description": "Yüzdelik, frekans hesapla", "estimated_hours": 6},
-                        {"title": "Görselleştirme", "description": "Pasta ve bar grafikleri çiz", "estimated_hours": 6}
-                    ]),
-                    "difficulty_level": "beginner",
-                    "estimated_hours": 24,
-                    "min_team_size": 2,
-                    "max_team_size": 3
-                },
-                # Mobile App - Beginner
-                {
-                    "id": "proj_simple_todo",
-                    "theme": "Mobile App",
-                    "name": "Basit Todo List",
-                    "description": "Mobil todo list uygulaması (prototip)",
-                    "objectives": json.dumps(["UI tasarımı", "Liste işlemleri", "Local storage", "Test"]),
-                    "deliverables": json.dumps(["app_mockup", "working_prototype", "documentation"]),
-                    "tasks": json.dumps([
-                        {"title": "UI Tasarımı", "description": "Todo list arayüzü tasarla", "estimated_hours": 6},
-                        {"title": "Liste İşlemleri", "description": "Ekle, sil, işaretle", "estimated_hours": 8},
-                        {"title": "Local Storage", "description": "Verileri kaydet", "estimated_hours": 4},
-                        {"title": "Test", "description": "Uygulamayı test et", "estimated_hours": 4}
-                    ]),
-                    "difficulty_level": "beginner",
-                    "estimated_hours": 36,
-                    "min_team_size": 2,
-                    "max_team_size": 4
-                },
-                # Automation - Beginner
-                {
-                    "id": "proj_file_organizer",
-                    "theme": "Automation",
-                    "name": "Dosya Organizasyon Scripti",
-                    "description": "Klasördeki dosyaları türe göre organize eden script",
-                    "objectives": json.dumps(["Dosya okuma", "Klasör oluşturma", "Dosya taşıma", "Test"]),
-                    "deliverables": json.dumps(["python_script", "usage_guide", "test_results"]),
-                    "tasks": json.dumps([
-                        {"title": "Dosya Okuma", "description": "Klasördeki dosyaları listele", "estimated_hours": 4},
-                        {"title": "Klasör Oluşturma", "description": "Dosya türüne göre klasör oluştur", "estimated_hours": 4},
-                        {"title": "Dosya Taşıma", "description": "Dosyaları ilgili klasöre taşı", "estimated_hours": 4},
-                        {"title": "Test", "description": "Scripti test et", "estimated_hours": 4}
-                    ]),
-                    "difficulty_level": "beginner",
-                    "estimated_hours": 24,
-                    "min_team_size": 2,
-                    "max_team_size": 3
-                },
-                {
-                    "id": "proj_email_template",
-                    "theme": "Automation",
-                    "name": "E-posta Şablon Oluşturucu",
-                    "description": "E-posta şablonları oluşturan basit sistem",
-                    "objectives": json.dumps(["Şablon tasarımı", "Değişken sistemi", "Test"]),
-                    "deliverables": json.dumps(["template_files", "usage_guide", "examples"]),
-                    "tasks": json.dumps([
-                        {"title": "Şablon Tasarımı", "description": "3 farklı e-posta şablonu", "estimated_hours": 6},
-                        {"title": "Değişken Sistemi", "description": "İsim, tarih gibi değişkenler", "estimated_hours": 4},
-                        {"title": "Test", "description": "Şablonları test et", "estimated_hours": 4}
-                    ]),
-                    "difficulty_level": "beginner",
-                    "estimated_hours": 24,
-                    "min_team_size": 2,
-                    "max_team_size": 3
-                }
-            ]
+    {
+        "id": "proj_sentiment_analyzer",
+        "theme": "AI Chatbot",
+        "name": "Basit Duygu Analizi",
+        "description": "Kullanıcı yorumlarını pozitif, negatif veya nötr olarak sınıflandıran Python uygulaması",
+        "objectives": ["Metin ön işleme", "Duygu sözlüğü oluşturma", "Sınıflandırma mantığı", "Test ve değerlendirme"],
+        "deliverables": ["python_script", "sentiment_dictionary", "test_results", "documentation"],
+        "tasks": [
+            {"title": "Metin Ön İşleme", "description": "Küçük harfe çevirme, noktalama temizleme, Türkçe karakter düzenleme", "estimated_hours": 6},
+            {"title": "Duygu Sözlüğü", "description": "Pozitif ve negatif kelime listesi oluştur", "estimated_hours": 6},
+            {"title": "Sınıflandırma", "description": "Kelime sayımına göre duygu skoru hesapla", "estimated_hours": 8},
+            {"title": "Test", "description": "Örnek metinlerle doğruluk testi yap", "estimated_hours": 4}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 36,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    {
+        "id": "proj_text_summarizer",
+        "theme": "AI Chatbot",
+        "name": "Basit Metin Özetleyici",
+        "description": "Uzun metinleri cümle önemine göre özetleyen Python uygulaması",
+        "objectives": ["Cümle ayrıştırma", "Kelime frekansı hesaplama", "Önem skoru atama", "Özet oluşturma"],
+        "deliverables": ["python_script", "sample_summaries", "usage_guide"],
+        "tasks": [
+            {"title": "Cümle Ayrıştırma", "description": "Metni cümlelere ayır ve temizle", "estimated_hours": 4},
+            {"title": "Kelime Frekansı", "description": "Her kelimenin kaç kez geçtiğini hesapla", "estimated_hours": 4},
+            {"title": "Önem Skoru", "description": "Her cümleye puan ver", "estimated_hours": 6},
+            {"title": "Özet Oluşturma", "description": "En önemli N cümleyi seç ve sırala", "estimated_hours": 4}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 28,
+        "min_team_size": 2,
+        "max_team_size": 3
+    },
+    {
+        "id": "proj_spam_detector",
+        "theme": "AI Chatbot",
+        "name": "Spam E-posta Dedektörü",
+        "description": "E-postaları spam veya normal olarak sınıflandıran kural tabanlı sistem",
+        "objectives": ["Spam anahtar kelimeleri belirleme", "Kural motoru oluşturma", "Skor hesaplama", "Test senaryoları"],
+        "deliverables": ["python_script", "keyword_list", "test_emails", "accuracy_report"],
+        "tasks": [
+            {"title": "Anahtar Kelimeler", "description": "Spam göstergesi olan kelimeleri listele", "estimated_hours": 4},
+            {"title": "Kural Motoru", "description": "Kurallara göre spam skoru hesaplayan fonksiyon", "estimated_hours": 8},
+            {"title": "Eşik Belirleme", "description": "Spam/normal ayrımı için eşik değer belirle", "estimated_hours": 4},
+            {"title": "Test", "description": "Örnek e-postalarla test et", "estimated_hours": 4}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 30,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    {
+        "id": "proj_recommendation_basic",
+        "theme": "AI Chatbot",
+        "name": "Basit Film Öneri Sistemi",
+        "description": "Kullanıcı tercihlerine göre film öneren basit içerik tabanlı sistem",
+        "objectives": ["Film veritabanı oluşturma", "Benzerlik hesaplama", "Öneri algoritması", "Kullanıcı arayüzü"],
+        "deliverables": ["python_script", "movie_database", "sample_recommendations"],
+        "tasks": [
+            {"title": "Film Veritabanı", "description": "Film bilgilerini içeren CSV oluştur", "estimated_hours": 4},
+            {"title": "Tür Eşleştirme", "description": "Türlere göre benzerlik hesapla", "estimated_hours": 6},
+            {"title": "Öneri Fonksiyonu", "description": "Beğenilen filme göre öneri üret", "estimated_hours": 6},
+            {"title": "CLI Arayüzü", "description": "Komut satırı arayüzü oluştur", "estimated_hours": 4}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 30,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    {
+        "id": "proj_flask_portfolio",
+        "theme": "Web App",
+        "name": "Kişisel Portfolyo Sitesi",
+        "description": "Flask ile oluşturulan dinamik kişisel portfolyo web sitesi",
+        "objectives": ["Flask kurulumu", "Şablon tasarımı", "Proje sayfaları", "İletişim formu"],
+        "deliverables": ["flask_app", "html_templates", "css_styles", "deployment_guide"],
+        "tasks": [
+            {"title": "Flask Kurulum", "description": "Proje yapısını oluştur ve Flask ayarla", "estimated_hours": 4},
+            {"title": "Ana Sayfa", "description": "Hakkımda bölümü ile ana sayfa", "estimated_hours": 6},
+            {"title": "Proje Galerisi", "description": "Projeleri listeleyen dinamik sayfa", "estimated_hours": 8},
+            {"title": "İletişim Formu", "description": "Basit iletişim formu ekle", "estimated_hours": 6}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 36,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    {
+        "id": "proj_url_shortener",
+        "theme": "Web App",
+        "name": "URL Kısaltma Servisi",
+        "description": "Uzun URL'leri kısaltan ve yönlendiren web uygulaması",
+        "objectives": ["URL kısaltma algoritması", "Veritabanı tasarımı", "Yönlendirme sistemi", "İstatistik sayfası"],
+        "deliverables": ["flask_app", "sqlite_database", "statistics_page", "documentation"],
+        "tasks": [
+            {"title": "Kısaltma Algoritması", "description": "Benzersiz kısa kod üreten fonksiyon", "estimated_hours": 4},
+            {"title": "Veritabanı", "description": "SQLite ile URL depolama", "estimated_hours": 6},
+            {"title": "Web Arayüzü", "description": "URL girişi ve kısaltma sayfası", "estimated_hours": 8},
+            {"title": "Yönlendirme", "description": "Kısa URL'den orijinale yönlendirme", "estimated_hours": 6}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 36,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    {
+        "id": "proj_blog_basic",
+        "theme": "Web App",
+        "name": "Basit Blog Uygulaması",
+        "description": "Yazı ekleme, düzenleme ve listeleme özellikli blog sistemi",
+        "objectives": ["CRUD işlemleri", "Şablon sistemi", "Veritabanı entegrasyonu", "Arama özelliği"],
+        "deliverables": ["flask_app", "database_schema", "templates", "user_guide"],
+        "tasks": [
+            {"title": "Veritabanı Tasarımı", "description": "Blog yazıları için SQLite şeması", "estimated_hours": 4},
+            {"title": "Yazı CRUD", "description": "Yazı ekleme, düzenleme, silme, listeleme", "estimated_hours": 10},
+            {"title": "Şablonlar", "description": "Jinja2 ile HTML şablonları", "estimated_hours": 8},
+            {"title": "Arama", "description": "Başlık ve içerikte arama", "estimated_hours": 4}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 40,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    {
+        "id": "proj_quiz_app",
+        "theme": "Web App",
+        "name": "Online Quiz Uygulaması",
+        "description": "Çoktan seçmeli sorularla quiz yapan ve skor hesaplayan uygulama",
+        "objectives": ["Soru veritabanı", "Quiz mantığı", "Skor hesaplama", "Sonuç sayfası"],
+        "deliverables": ["flask_app", "question_database", "score_system", "result_page"],
+        "tasks": [
+            {"title": "Soru Veritabanı", "description": "JSON formatında soru havuzu oluştur", "estimated_hours": 6},
+            {"title": "Quiz Akışı", "description": "Soru gösterme ve cevap alma mantığı", "estimated_hours": 8},
+            {"title": "Skor Sistemi", "description": "Doğru/yanlış sayımı ve puan hesaplama", "estimated_hours": 4},
+            {"title": "Sonuç Sayfası", "description": "Sonuç ve doğru cevapları göster", "estimated_hours": 6}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 36,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    {
+        "id": "proj_sales_analysis",
+        "theme": "Data Analysis",
+        "name": "Satış Verisi Analizi",
+        "description": "E-ticaret satış verilerini analiz edip görselleştiren Python projesi",
+        "objectives": ["Veri temizleme", "Trend analizi", "Kategori bazlı analiz", "Dashboard oluşturma"],
+        "deliverables": ["jupyter_notebook", "visualizations", "analysis_report", "insights_summary"],
+        "tasks": [
+            {"title": "Veri Temizleme", "description": "Eksik ve hatalı verileri düzelt", "estimated_hours": 6},
+            {"title": "Keşifsel Analiz", "description": "Temel istatistikler ve dağılımlar", "estimated_hours": 8},
+            {"title": "Trend Analizi", "description": "Aylık/haftalık satış trendleri", "estimated_hours": 8},
+            {"title": "Görselleştirme", "description": "Matplotlib/Seaborn ile grafikler", "estimated_hours": 8}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 42,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    {
+        "id": "proj_weather_analysis",
+        "theme": "Data Analysis",
+        "name": "Hava Durumu Verisi Analizi",
+        "description": "Tarihi hava durumu verilerini analiz eden ve kalıpları bulan proje",
+        "objectives": ["Veri toplama", "Mevsimsel analiz", "Korelasyon analizi", "Tahmin denemesi"],
+        "deliverables": ["jupyter_notebook", "weather_charts", "correlation_matrix", "findings_report"],
+        "tasks": [
+            {"title": "Veri Hazırlama", "description": "CSV'den veri okuma ve temizleme", "estimated_hours": 6},
+            {"title": "Mevsimsel Analiz", "description": "Mevsim bazlı sıcaklık/yağış analizi", "estimated_hours": 8},
+            {"title": "Korelasyon", "description": "Değişkenler arası ilişki analizi", "estimated_hours": 6},
+            {"title": "Görselleştirme", "description": "Zaman serisi ve ısı haritaları", "estimated_hours": 6}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 38,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    {
+        "id": "proj_student_performance",
+        "theme": "Data Analysis",
+        "name": "Öğrenci Performans Analizi",
+        "description": "Öğrenci notlarını analiz edip başarı faktörlerini araştıran proje",
+        "objectives": ["Veri keşfi", "İstatistiksel analiz", "Faktör analizi", "Öneriler raporu"],
+        "deliverables": ["jupyter_notebook", "statistical_analysis", "factor_charts", "recommendation_report"],
+        "tasks": [
+            {"title": "Veri Keşfi", "description": "Veri setini tanı ve temizle", "estimated_hours": 6},
+            {"title": "Tanımlayıcı İstatistik", "description": "Ortalama, medyan, standart sapma", "estimated_hours": 6},
+            {"title": "Faktör Analizi", "description": "Başarıyı etkileyen faktörleri bul", "estimated_hours": 8},
+            {"title": "Görselleştirme", "description": "Box plot, scatter plot, histogram", "estimated_hours": 6}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 38,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    {
+        "id": "proj_covid_tracker",
+        "theme": "Data Analysis",
+        "name": "Salgın Verisi Takip Sistemi",
+        "description": "Açık kaynak salgın verilerini analiz eden ve görselleştiren dashboard",
+        "objectives": ["API'den veri çekme", "Zaman serisi analizi", "Ülke karşılaştırması", "İnteraktif grafik"],
+        "deliverables": ["python_script", "dashboard", "country_comparison", "trend_analysis"],
+        "tasks": [
+            {"title": "Veri Çekme", "description": "Açık kaynak API'den veri al", "estimated_hours": 6},
+            {"title": "Veri İşleme", "description": "Pandas ile veri düzenleme", "estimated_hours": 6},
+            {"title": "Zaman Serisi", "description": "Günlük/haftalık trend analizi", "estimated_hours": 8},
+            {"title": "Dashboard", "description": "Plotly ile interaktif görselleştirme", "estimated_hours": 10}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 42,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    # Mobile App projeleri kaldırıldı - sadece AI ve Web App kullanılıyor
+    # Automation Projeleri
+    {
+        "id": "proj_file_organizer",
+        "theme": "Automation",
+        "name": "Dosya Organizasyon Scripti",
+        "description": "Belirli klasördeki dosyaları türüne göre otomatik organize eden Python scripti",
+        "objectives": ["Dosya türü tespiti", "Klasör oluşturma", "Dosya taşıma", "Log tutma"],
+        "deliverables": ["python_script", "config_file", "log_system", "usage_guide"],
+        "tasks": [
+            {"title": "Dosya Tespiti", "description": "Dosya uzantılarına göre tür belirleme", "estimated_hours": 4},
+            {"title": "Klasör Yapısı", "description": "Türlere göre klasör oluşturma", "estimated_hours": 4},
+            {"title": "Dosya Taşıma", "description": "Dosyaları ilgili klasöre taşıma", "estimated_hours": 6},
+            {"title": "Log Sistemi", "description": "Yapılan işlemleri loglama", "estimated_hours": 4}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 30,
+        "min_team_size": 2,
+        "max_team_size": 3
+    },
+    {
+        "id": "proj_email_automation",
+        "theme": "Automation",
+        "name": "E-posta Otomasyon Scripti",
+        "description": "Belirli koşullara göre otomatik e-posta gönderen Python scripti",
+        "objectives": ["E-posta şablonları", "Koşul kontrolü", "SMTP entegrasyonu", "Zamanlama"],
+        "deliverables": ["python_script", "email_templates", "config_file", "scheduler"],
+        "tasks": [
+            {"title": "SMTP Ayarları", "description": "E-posta sunucusu bağlantısı", "estimated_hours": 4},
+            {"title": "Şablon Sistemi", "description": "Dinamik e-posta şablonları", "estimated_hours": 6},
+            {"title": "Koşul Motoru", "description": "Belirli koşullarda e-posta gönderme", "estimated_hours": 6},
+            {"title": "Zamanlama", "description": "Schedule ile otomatik çalıştırma", "estimated_hours": 4}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 32,
+        "min_team_size": 2,
+        "max_team_size": 4
+    },
+    {
+        "id": "proj_backup_automation",
+        "theme": "Automation",
+        "name": "Otomatik Yedekleme Scripti",
+        "description": "Belirli klasörleri otomatik olarak yedekleyen ve sıkıştıran script",
+        "objectives": ["Yedekleme stratejisi", "Sıkıştırma", "Tarih damgası", "Eski yedekleri temizleme"],
+        "deliverables": ["python_script", "backup_system", "compression", "cleanup_logic"],
+        "tasks": [
+            {"title": "Yedekleme Mantığı", "description": "Dosya kopyalama ve tarih damgası", "estimated_hours": 6},
+            {"title": "Sıkıştırma", "description": "ZIP formatında sıkıştırma", "estimated_hours": 4},
+            {"title": "Temizleme", "description": "Eski yedekleri otomatik silme", "estimated_hours": 4},
+            {"title": "Zamanlama", "description": "Cron/schedule ile otomatik çalıştırma", "estimated_hours": 4}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 30,
+        "min_team_size": 2,
+        "max_team_size": 3
+    },
+    {
+        "id": "proj_social_media_scheduler",
+        "theme": "Automation",
+        "name": "Sosyal Medya Zamanlayıcı",
+        "description": "Twitter/LinkedIn için otomatik post zamanlayan ve gönderen script",
+        "objectives": ["API entegrasyonu", "Zamanlama sistemi", "İçerik yönetimi", "Hata yönetimi"],
+        "deliverables": ["python_script", "api_integration", "scheduler", "content_manager"],
+        "tasks": [
+            {"title": "API Bağlantısı", "description": "Twitter/LinkedIn API entegrasyonu", "estimated_hours": 8},
+            {"title": "Zamanlama", "description": "Belirli saatte post gönderme", "estimated_hours": 6},
+            {"title": "İçerik Yönetimi", "description": "JSON/CSV'den içerik okuma", "estimated_hours": 4},
+            {"title": "Hata Yönetimi", "description": "API hatalarını yönetme", "estimated_hours": 4}
+        ],
+        "difficulty_level": "beginner",
+        "estimated_hours": 36,
+        "min_team_size": 2,
+        "max_team_size": 4
+    }
+]
             
+            projects_added = 0
             for project in all_projects:
-                cursor.execute("""
-                    INSERT OR IGNORE INTO challenge_projects 
-                    (id, theme, name, description, objectives, deliverables, tasks, difficulty_level, estimated_hours, min_team_size, max_team_size)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    project["id"],
-                    project["theme"],
-                    project["name"],
-                    project["description"],
-                    project["objectives"],
-                    project["deliverables"],
-                    project["tasks"],
-                    project["difficulty_level"],
-                    project["estimated_hours"],
-                    project["min_team_size"],
-                    project["max_team_size"]
-                ))
+                # Önce kontrol et - proje var mı?
+                cursor.execute("SELECT id FROM challenge_projects WHERE id = ?", (project["id"],))
+                exists = cursor.fetchone()
+                
+                if not exists:
+                    # objectives ve deliverables JSON formatına çevir
+                    objectives_json = json.dumps(project["objectives"], ensure_ascii=False)
+                    deliverables_json = json.dumps(project["deliverables"], ensure_ascii=False)
+                    tasks_json = json.dumps(project["tasks"], ensure_ascii=False)
+                    
+                    cursor.execute("""
+                        INSERT INTO challenge_projects 
+                        (id, theme, name, description, objectives, deliverables, tasks, difficulty_level, estimated_hours, min_team_size, max_team_size)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        project["id"],
+                        project["theme"],
+                        project["name"],
+                        project["description"],
+                        objectives_json,
+                        deliverables_json,
+                        tasks_json,
+                        project["difficulty_level"],
+                        project["estimated_hours"],
+                        project["min_team_size"],
+                        project["max_team_size"]
+                    ))
+                    projects_added += 1
+                    logger.debug(f"[+] Proje eklendi: {project['name']} ({project['theme']})")
             
-            logger.info("[+] Challenge seed data eklendi.")
+            if projects_added > 0:
+                logger.info(f"[+] {projects_added} yeni proje eklendi.")
+            else:
+                logger.debug("[i] Tüm projeler zaten mevcut.")
+            
+            # Toplam istatistik
+            cursor.execute("SELECT COUNT(*) FROM challenge_projects")
+            total_projects = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM challenge_themes WHERE is_active = 1")
+            total_themes = cursor.fetchone()[0]
+            
+            logger.info(f"[i] Challenge veritabanı durumu: {total_themes} tema, {total_projects} proje mevcut.")
         except Exception as e:
             logger.warning(f"[!] Challenge seed data eklenirken hata: {e}")
+    
+    def _create_indexes(self, cursor):
+        """Performans için index'leri oluşturur."""
+        try:
+            indexes = [
+                # Challenge indexes
+                ("idx_challenge_hubs_status", "challenge_hubs", "status"),
+                ("idx_challenge_hubs_creator", "challenge_hubs", "creator_id"),
+                ("idx_challenge_participants_hub", "challenge_participants", "challenge_hub_id"),
+                ("idx_challenge_participants_user", "challenge_participants", "user_id"),
+                ("idx_challenge_submissions_hub", "challenge_submissions", "challenge_hub_id"),
+                
+                # Help indexes
+                ("idx_help_requests_status", "help_requests", "status"),
+                ("idx_help_requests_requester", "help_requests", "requester_id"),
+                ("idx_help_requests_helper", "help_requests", "helper_id"),
+                
+                # Match indexes
+                ("idx_matches_status", "matches", "status"),
+                ("idx_matches_user1", "matches", "user1_id"),
+                ("idx_matches_user2", "matches", "user2_id"),
+                
+                # Poll indexes
+                ("idx_polls_is_closed", "polls", "is_closed"),
+                ("idx_polls_creator", "polls", "creator_id"),
+                ("idx_votes_poll", "votes", "poll_id"),
+                ("idx_votes_user", "votes", "user_id"),
+                
+                # User indexes
+                ("idx_users_slack_id", "users", "slack_id"),
+            ]
+            
+            for index_name, table_name, column_name in indexes:
+                try:
+                    cursor.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name}({column_name})")
+                    logger.debug(f"[+] Index oluşturuldu: {index_name}")
+                except sqlite3.Error as e:
+                    logger.warning(f"[!] Index oluşturulamadı ({index_name}): {e}")
+            
+            logger.info("[+] Veritabanı index'leri kontrol edildi.")
+        except Exception as e:
+            logger.warning(f"[!] Index oluşturulurken hata: {e}")
+    
+    def clean_challenge_tables(self):
+        """Challenge tablolarını temizler (startup için)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Foreign key constraint'leri geçici olarak devre dışı bırak
+                cursor.execute("PRAGMA foreign_keys = OFF")
+                
+                # Sırayla temizle (foreign key bağımlılıklarına göre)
+                tables = [
+                    "challenge_submissions",
+                    "challenge_participants",
+                    "challenge_hubs",
+                    "user_challenge_stats"
+                ]
+                
+                deleted_counts = {}
+                for table in tables:
+                    cursor.execute(f"DELETE FROM {table}")
+                    deleted_counts[table] = cursor.rowcount
+                    logger.debug(f"[+] {table} temizlendi: {cursor.rowcount} kayıt silindi")
+                
+                # Foreign key constraint'leri tekrar etkinleştir
+                cursor.execute("PRAGMA foreign_keys = ON")
+                
+                conn.commit()
+                
+                total_deleted = sum(deleted_counts.values())
+                if total_deleted > 0:
+                    logger.info(f"[+] Challenge tabloları temizlendi: {total_deleted} kayıt silindi")
+                else:
+                    logger.info("[i] Challenge tabloları zaten temizdi.")
+                
+                return deleted_counts
+        except Exception as e:
+            logger.error(f"[X] Challenge tabloları temizlenirken hata: {e}", exc_info=True)
+            # Hata durumunda foreign key'leri tekrar etkinleştir
+            try:
+                with self.get_connection() as conn:
+                    conn.execute("PRAGMA foreign_keys = ON")
+            except:
+                pass
+            return {}

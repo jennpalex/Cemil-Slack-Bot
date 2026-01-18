@@ -8,13 +8,16 @@ class ChatManager:
     Dökümantasyon: https://api.slack.com/methods?filter=chat
     """
 
-    def __init__(self, client):
-        self.client = client
+    def __init__(self, client, user_client=None):
+        self.client = client  # Bot token client
+        self.user_client = user_client  # User token client (opsiyonel, user token ile oluşturulan kanallar için)
 
     def post_message(self, channel: str, text: str, blocks: Optional[List[Dict[str, Any]]] = None, **kwargs) -> Dict[str, Any]:
         """
         Kanala mesaj gönderir (chat.postMessage).
+        Mesajlar her zaman bot token ile gönderilir (bot olarak görünür).
         """
+        # Mesajlar her zaman bot token ile gönderilir
         try:
             response = self.client.chat_postMessage(
                 channel=channel,
@@ -23,7 +26,7 @@ class ChatManager:
                 **kwargs
             )
             if response["ok"]:
-                logger.info(f"[+] Mesaj gönderildi (Kanal: {channel})")
+                logger.info(f"[+] Mesaj gönderildi (Kanal: {channel}) - bot token kullanıldı")
                 return response
             else:
                 raise SlackClientError(f"Mesaj gönderilemedi: {response['error']}")

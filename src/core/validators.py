@@ -186,7 +186,7 @@ class HelpRequest(BaseModel):
 
 
 class ChallengeStartRequest(BaseModel):
-    """Challenge başlatma komutu için input validation."""
+    """Challenge başlatma komutu için input validation - Sadece kişi sayısı."""
     
     team_size: int = Field(
         ...,
@@ -194,100 +194,27 @@ class ChallengeStartRequest(BaseModel):
         le=6,
         description="Takım büyüklüğü (2-6 arası)"
     )
-    theme: str = Field(
-        ...,
-        min_length=1,
-        max_length=50,
-        description="Challenge teması"
-    )
-    deadline_hours: Optional[int] = Field(
-        48,
-        ge=12,
-        le=168,
-        description="Süre (12-168 saat)"
-    )
-    difficulty: Optional[str] = Field(
-        "intermediate",
-        description="Zorluk seviyesi"
-    )
-    
-    @field_validator('theme')
-    @classmethod
-    def validate_theme(cls, v: str) -> str:
-        """Temayı doğrula."""
-        valid_themes = [
-            "AI Chatbot",
-            "Web App",
-            "Data Analysis",
-            "Mobile App",
-            "Automation"
-        ]
-        v = v.strip()
-        if v not in valid_themes:
-            raise ValueError(
-                f"Geçersiz tema: '{v}'. "
-                f"Geçerli temalar: {', '.join(valid_themes)}"
-            )
-        return v
-    
-    @field_validator('difficulty')
-    @classmethod
-    def validate_difficulty(cls, v: str) -> str:
-        """Zorluk seviyesini doğrula."""
-        valid_difficulties = ["beginner", "intermediate", "advanced"]
-        if v not in valid_difficulties:
-            raise ValueError(
-                f"Geçersiz zorluk: '{v}'. "
-                f"Geçerli seviyeler: {', '.join(valid_difficulties)}"
-            )
-        return v
     
     @classmethod
     def parse_from_text(cls, text: str) -> 'ChallengeStartRequest':
         """
-        Parse: /challenge start 4 "AI Chatbot" 48 "advanced"
+        Parse: /challenge start 4
+        Sadece kişi sayısı alınır, tema ve diğer parametreler random seçilir.
         """
         text = text.strip()
         
-        # Tırnak içindeki theme'i bul
-        theme_match = re.search(r'["\']([^"\']+)["\']', text)
-        if not theme_match:
-            raise ValueError("Tema tırnak içinde olmalı. Örnek: \"AI Chatbot\"")
+        if not text:
+            raise ValueError("Kişi sayısı gerekli. Örnek: `/challenge start 4`")
         
-        theme = theme_match.group(1)
+        parts = text.split()
         
-        # Tırnaklı kısmı çıkar
-        text_without_theme = re.sub(r'["\'][^"\']+["\']', '', text)
-        parts = [p for p in text_without_theme.split() if p]
-        
-        if not parts:
-            raise ValueError("team_size gerekli")
-        
-        # team_size (ilk parametre)
+        # team_size (ilk ve tek parametre)
         try:
             team_size = int(parts[0])
         except ValueError:
-            raise ValueError("team_size bir sayı olmalı")
+            raise ValueError("Kişi sayısı bir sayı olmalı (2-6 arası)")
         
-        # deadline_hours (opsiyonel)
-        deadline_hours = 48
-        if len(parts) > 1 and parts[1].isdigit():
-            deadline_hours = int(parts[1])
-            parts = parts[2:]
-        else:
-            parts = parts[1:]
-        
-        # difficulty (opsiyonel)
-        difficulty = "intermediate"
-        if parts:
-            difficulty = parts[0]
-        
-        return cls(
-            team_size=team_size,
-            theme=theme,
-            deadline_hours=deadline_hours,
-            difficulty=difficulty
-        )
+        return cls(team_size=team_size)
 
 
 class ChallengeJoinRequest(BaseModel):

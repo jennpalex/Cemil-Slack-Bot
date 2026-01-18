@@ -130,7 +130,7 @@ class HelpService:
                             "text": (
                                 f"*<@{requester_id}>* yardım istiyor:\n\n"
                                 f"*{description}*\n\n"
-                                f"Bu kanal 30 dakika sonra otomatik olarak kapatılacak. "
+                                f"Bu kanal 10 dakika sonra otomatik olarak kapatılacak. "
                                 f"Yardım etmek isteyenler 'Yardım Et' butonuna tıklayarak bu kanala katılabilir."
                             )
                         }
@@ -140,12 +140,13 @@ class HelpService:
                         "elements": [
                             {
                                 "type": "mrkdwn",
-                                "text": f"🆔 Yardım ID: `{help_id[:8]}...` | ⏰ Kanal 30 dakika sonra kapanacak"
+                                "text": f"🆔 Yardım ID: `{help_id[:8]}...` | ⏰ Kanal 10 dakika sonra kapanacak"
                             }
                         ]
                     }
                 ]
                 
+                # Mesajlar bot token ile gönderilir (bot olarak görünür)
                 self.chat.post_message(
                     channel=help_channel_id,
                     text=f"🆘 Yardım İsteği: {topic}",
@@ -155,17 +156,17 @@ class HelpService:
                 # Veritabanına help_channel_id kaydet
                 self.repo.update(help_id, {"help_channel_id": help_channel_id})
                 
-                # 30 dakika sonra kanalı kapatmak için scheduled task ekle
+                # 10 dakika sonra kanalı kapatmak için scheduled task ekle
                 if self.cron_client:
                     try:
                         job_id = f"close_help_channel_{help_id}"
                         self.cron_client.add_once_job(
                             func=self._close_help_channel,
-                            delay_minutes=30,
+                            delay_minutes=10,
                             job_id=job_id,
                             args=[help_id, help_channel_id]
                         )
-                        logger.info(f"[+] Kanal kapatma görevi planlandı: {job_id} (30 dakika sonra)")
+                        logger.info(f"[+] Kanal kapatma görevi planlandı: {job_id} (10 dakika sonra)")
                     except Exception as e:
                         logger.warning(f"[!] Kanal kapatma görevi planlanamadı: {e}")
                 
@@ -221,7 +222,7 @@ class HelpService:
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": f"🆔 ID: `{help_id[:8]}...` | 📅 {datetime.now().strftime('%d.%m.%Y %H:%M')} | ⏰ 30 dakika sonra kapanacak"
+                            "text": f"🆔 ID: `{help_id[:8]}...` | 📅 {datetime.now().strftime('%d.%m.%Y %H:%M')} | ⏰ 10 dakika sonra kapanacak"
                         }
                     ]
                 }
@@ -275,12 +276,27 @@ class HelpService:
             
             logger.info(f"[>] Kanala katılma isteği | Kullanıcı: {user_name} ({user_id}) | Yardım ID: {help_id}")
             
-            # 5. Kullanıcıyı kanala davet et
+            # 5. Kullanıcının zaten kanalda olup olmadığını kontrol et
+            try:
+                channel_members = self.conv.get_members(help_channel_id)
+                if user_id in channel_members:
+                    logger.info(f"[i] Kullanıcı zaten kanalda: {user_id} | Kanal: {help_channel_id}")
+                    return {
+                        "success": True,
+                        "message": f"✅ Zaten kanaldasınız! <#{help_channel_id}> kanalına gidebilirsiniz.",
+                        "channel_id": help_channel_id,
+                        "already_joined": True
+                    }
+            except Exception as e:
+                logger.debug(f"[i] Kanal üyeleri kontrol edilemedi, devam ediliyor: {e}")
+            
+            # 6. Kullanıcıyı kanala davet et
             try:
                 self.conv.invite_users(help_channel_id, [user_id])
                 logger.info(f"[+] Kullanıcı kanala davet edildi: {user_id} | Kanal: {help_channel_id}")
                 
-                # Yardım kanalına bilgilendirme mesajı gönder
+                # Yardım kanalına bilgilendirme mesajı gönder (sadece yeni katılımda)
+                # Mesajlar bot token ile gönderilir (bot olarak görünür)
                 self.chat.post_message(
                     channel=help_channel_id,
                     text=f"✅ <@{user_id}> kanala katıldı!",
@@ -288,7 +304,7 @@ class HelpService:
                         "type": "section",
                         "text": {
                             "type": "mrkdwn",
-                            "text": f"✅ *<@{user_id}>* kanala katıldı ve yardım etmek istiyor!"
+                            "text": f"✅ *<@{user_name}>* kanala katıldı ve yardım etmek istiyor! 🎉"
                         }
                     }]
                 )
@@ -296,16 +312,18 @@ class HelpService:
                 return {
                     "success": True,
                     "message": f"✅ Kanala katıldınız! <#{help_channel_id}> kanalına gidebilirsiniz.",
-                    "channel_id": help_channel_id
+                    "channel_id": help_channel_id,
+                    "already_joined": False
                 }
             except Exception as e:
                 error_msg = str(e).lower()
-                if "already_in_channel" in error_msg or "already_in team" in error_msg:
-                    logger.info(f"[i] Kullanıcı zaten kanalda: {user_id}")
+                if "already_in_channel" in error_msg or "already_in team" in error_msg or "cant_invite_self" in error_msg:
+                    logger.info(f"[i] Kullanıcı zaten kanalda (hata mesajından): {user_id}")
                     return {
                         "success": True,
                         "message": f"✅ Zaten kanaldasınız! <#{help_channel_id}> kanalına gidebilirsiniz.",
-                        "channel_id": help_channel_id
+                        "channel_id": help_channel_id,
+                        "already_joined": True
                     }
                 else:
                     logger.warning(f"[!] Kullanıcı kanala davet edilemedi: {e}")
@@ -316,7 +334,7 @@ class HelpService:
             return {"success": False, "message": "Kanala katılırken bir hata oluştu."}
     
     async def _close_help_channel(self, help_id: str, help_channel_id: str):
-        """Yardım kanalını kapatır, mesajları analiz eder ve DM/Admin'e gönderir (30 dakika sonra otomatik çağrılır)."""
+        """Yardım kanalını kapatır, mesajları analiz eder ve DM/Admin'e gönderir (10 dakika sonra otomatik çağrılır)."""
         try:
             logger.info(f"[>] Yardım kanalı kapatılıyor | Help ID: {help_id} | Kanal: {help_channel_id}")
             
@@ -434,14 +452,15 @@ class HelpService:
             
             # 7. Kanal kapatıldı mesajı gönder (eğer hala açıksa)
             try:
+                # Mesajlar bot token ile gönderilir (bot olarak görünür)
                 self.chat.post_message(
                     channel=help_channel_id,
-                    text="⏰ Bu yardım kanalı 30 dakika sonra otomatik olarak kapatıldı.",
+                    text="⏰ Bu yardım kanalı 10 dakika sonra otomatik olarak kapatıldı.",
                     blocks=[{
                         "type": "section",
                         "text": {
                             "type": "mrkdwn",
-                            "text": "⏰ *Kanal Kapatıldı*\n\nBu yardım kanalı 30 dakika sonra otomatik olarak kapatıldı. "
+                            "text": "⏰ *Kanal Kapatıldı*\n\nBu yardım kanalı 10 dakika sonra otomatik olarak kapatıldı. "
                                     "Yardıma devam etmek isterseniz, yeni bir yardım isteği oluşturabilirsiniz."
                         }
                     }]
@@ -449,15 +468,19 @@ class HelpService:
             except Exception as e:
                 logger.debug(f"[i] Kanal zaten kapatılmış, mesaj gönderilemedi: {e}")
             
-            # 8. Kanalı arşivle
-            success = self.conv.archive_channel(help_channel_id)
-            
-            if success:
-                # Yardım isteğini kapatılmış olarak işaretle
+            # 8. Kanalı arşivle (kapat)
+            try:
+                success = self.conv.archive_channel(help_channel_id)
+                if success:
+                    # Yardım isteğini kapatılmış olarak işaretle
+                    self.repo.update(help_id, {"status": "closed"})
+                    logger.info(f"[+] Yardım kanalı arşivlendi (kapatıldı) | Help ID: {help_id}")
+                else:
+                    logger.warning(f"[!] Yardım kanalı arşivlenemedi | Help ID: {help_id}")
+            except Exception as e:
+                logger.warning(f"[!] Yardım kanalı arşivlenirken hata: {e}")
+                # Hata olsa bile durumu güncelle
                 self.repo.update(help_id, {"status": "closed"})
-                logger.info(f"[+] Yardım kanalı başarıyla kapatıldı | Help ID: {help_id}")
-            else:
-                logger.warning(f"[!] Yardım kanalı kapatılamadı | Help ID: {help_id}")
                 
         except Exception as e:
             logger.error(f"[X] Yardım kanalı kapatılırken hata: {e}", exc_info=True)

@@ -30,7 +30,7 @@ class ChallengeEnhancementService:
         """
         try:
             # 1. Knowledge base'den ilgili bilgileri al
-            relevant_knowledge = await self._get_relevant_knowledge(
+            relevant_knowledge = self._get_relevant_knowledge(
                 theme=theme,
                 project_name=base_project.get("name", "")
             )
@@ -71,7 +71,7 @@ class ChallengeEnhancementService:
             Açıklama: {base_project.get('description', '')}
             
             Mevcut Görevler:
-            {self._format_tasks(base_project.get('tasks', []))}
+            {self._format_tasks(self._parse_tasks(base_project.get('tasks', [])))}
             
             İlgili Bilgiler:
             {relevant_knowledge}
@@ -88,11 +88,22 @@ class ChallengeEnhancementService:
             # 5. Yeni görevler oluştur
             new_tasks = self._create_tasks_from_features(enhanced_features)
 
-            # 6. Projeyi güncelle
+            # 6. Mevcut görevleri parse et (JSON string olabilir)
+            existing_tasks = base_project.get("tasks", [])
+            if isinstance(existing_tasks, str):
+                try:
+                    existing_tasks = json.loads(existing_tasks)
+                except json.JSONDecodeError:
+                    logger.warning("[!] Tasks JSON parse edilemedi, boş liste kullanılıyor")
+                    existing_tasks = []
+            elif not isinstance(existing_tasks, list):
+                existing_tasks = []
+
+            # 7. Projeyi güncelle
             enhanced_project = {
                 **base_project,
                 "llm_enhanced_features": enhanced_features,
-                "tasks": base_project.get("tasks", []) + new_tasks,
+                "tasks": existing_tasks + new_tasks,
             }
 
             logger.info(f"[+] LLM özelleştirmesi tamamlandı: {len(enhanced_features)} özellik eklendi")
@@ -103,7 +114,7 @@ class ChallengeEnhancementService:
             # Hata durumunda orijinal projeyi döndür
             return base_project
 
-    async def _get_relevant_knowledge(
+    def _get_relevant_knowledge(
         self,
         theme: str,
         project_name: str
@@ -113,7 +124,7 @@ class ChallengeEnhancementService:
         """
         try:
             query = f"{theme} {project_name} best practices guidelines"
-            results = await self.knowledge.model_search_context(query, top_k=3)
+            results = self.knowledge.model_search_context(query, top_k=3)
 
             if not results:
                 return "İlgili bilgi bulunamadı."
@@ -128,17 +139,28 @@ class ChallengeEnhancementService:
             logger.warning(f"[!] Knowledge base sorgusu hatası: {e}")
             return ""
 
-    def _format_tasks(self, tasks: List[Dict]) -> str:
-        """Görevleri formatla."""
+    def _parse_tasks(self, tasks: Any) -> List[Dict]:
+        """Görevleri parse et (JSON string veya list olabilir)."""
         if not tasks:
-            return "Görev yok"
+            return []
         
         # Eğer tasks JSON string ise parse et
         if isinstance(tasks, str):
             try:
                 tasks = json.loads(tasks)
-            except:
-                return "Görev formatı hatalı"
+            except json.JSONDecodeError:
+                logger.warning("[!] Tasks JSON parse edilemedi")
+                return []
+        
+        if not isinstance(tasks, list):
+            return []
+        
+        return tasks
+
+    def _format_tasks(self, tasks: List[Dict]) -> str:
+        """Görevleri formatla."""
+        if not tasks:
+            return "Görev yok"
         
         return "\n".join([
             f"- {task.get('title', task.get('name', 'Unknown'))}: {task.get('description', '')}"

@@ -40,7 +40,8 @@ class ChallengeHubService:
         stats_repo: UserChallengeStatsRepository,
         enhancement_service: ChallengeEnhancementService,
         groq_client: GroqClient,
-        cron_client: CronClient
+        cron_client: CronClient,
+        db_client=None
     ):
         self.chat = chat_manager
         self.conv = conv_manager
@@ -54,56 +55,107 @@ class ChallengeHubService:
         self.enhancement = enhancement_service
         self.groq = groq_client
         self.cron = cron_client
+        self.db_client = db_client
 
     async def start_challenge(
         self,
         creator_id: str,
-        theme: str,
         team_size: int,
-        deadline_hours: int = 48,
-        difficulty: str = "intermediate",
         channel_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Yeni challenge başlatır.
+        Yeni challenge başlatır - Sadece kişi sayısı, tema ve proje random seçilir.
         """
         try:
-            # 1. Kullanıcının aktif challenge'ı var mı?
-            active_challenges = self.participant_repo.get_user_active_challenges(creator_id)
+            # 0. Kullanıcının users tablosunda olup olmadığını kontrol et (foreign key için gerekli)
+            if not self.db_client:
+                logger.error("[X] db_client bulunamadı, kullanıcı kontrolü yapılamıyor")
+            else:
+                try:
+                    with self.db_client.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT id FROM users WHERE slack_id = ?", (creator_id,))
+                        user_exists = cursor.fetchone()
+                        
+                        if not user_exists:
+                            # Kullanıcı yoksa otomatik ekle (minimal bilgilerle)
+                            logger.info(f"[i] Kullanıcı users tablosunda yok, otomatik ekleniyor: {creator_id}")
+                            user_id = str(uuid.uuid4())
+                            cursor.execute("""
+                                INSERT INTO users (id, slack_id, full_name, created_at, updated_at)
+                                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            """, (user_id, creator_id, f"User {creator_id}"))
+                            conn.commit()
+                            logger.info(f"[+] Kullanıcı otomatik eklendi: {creator_id} (ID: {user_id})")
+                except Exception as e:
+                    logger.warning(f"[!] Kullanıcı kontrolü/ekleme hatası: {e}")
+                    # Hata olsa bile devam et, belki kullanıcı zaten var
+            
+            # 1. Kullanıcının aktif challenge'ı var mı? (Katılımcı VEYA creator olarak)
+            # Bir kişi sadece tek bir aktif challenge'da bulunabilir!
+            active_challenges = []
+            
+            # A) Katılımcı olarak aktif challenge'ları kontrol et
+            try:
+                participant_challenges = self.participant_repo.get_user_active_challenges(creator_id)
+                if participant_challenges:
+                    active_challenges.extend(participant_challenges)
+            except Exception as e:
+                logger.warning(f"[!] Participant challenge kontrolü hatası: {e}")
+            
+            # B) Creator olarak aktif challenge'ları kontrol et
+            try:
+                if self.db_client:
+                    with self.db_client.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT * FROM challenge_hubs
+                            WHERE creator_id = ? AND status IN ('recruiting', 'active')
+                        """, (creator_id,))
+                        rows = cursor.fetchall()
+                        creator_challenges = [dict(row) for row in rows]
+                        if creator_challenges:
+                            active_challenges.extend(creator_challenges)
+            except Exception as e:
+                logger.warning(f"[!] Creator challenge kontrolü hatası: {e}")
+            
+            # Eğer herhangi bir aktif challenge varsa (katılımcı veya creator), yeni challenge açamaz
             if active_challenges:
+                challenge_info = active_challenges[0]
+                challenge_status = challenge_info.get('status', 'unknown')
+                challenge_id = challenge_info.get('id', 'unknown')[:8]
+                
                 return {
                     "success": False,
-                    "message": f"❌ Zaten aktif bir challenge'ınız var. Önce onu tamamlayın.",
+                    "message": (
+                        f"❌ *Zaten Aktif Bir Challenge'ınız Var!*\n\n"
+                        f"📊 *Durum:* {challenge_status.upper()}\n"
+                        f"🆔 *Challenge ID:* `{challenge_id}...`\n\n"
+                        f"💡 *Not:* Bir kişi aynı anda sadece tek bir aktif challenge'da bulunabilir.\n"
+                        f"Mevcut challenge'ınızı tamamladıktan sonra yeni bir challenge başlatabilirsiniz."
+                    ),
                     "error_code": "USER_HAS_ACTIVE_CHALLENGE"
                 }
 
-            # 2. Challenge hub oluştur
+            # 2. Challenge hub oluştur (tema ve süre henüz belirlenmedi)
             challenge_id = str(uuid.uuid4())
-            deadline = datetime.now() + timedelta(hours=deadline_hours)
 
             hub_data = {
                 "id": challenge_id,
                 "creator_id": creator_id,
-                "theme": theme,
+                "theme": "TBD",  # Takım dolunca random seçilecek
                 "team_size": team_size,
                 "status": "recruiting",
-                "deadline_hours": deadline_hours,
-                "difficulty": difficulty,
-                "deadline": deadline.isoformat()
+                "deadline_hours": 0,  # Proje seçilince DB'den gelecek
+                "difficulty": "TBD"  # Proje seçilince belirlenecek
             }
 
             self.hub_repo.create(hub_data)
 
-            # 3. Creator'ı otomatik ekle
-            self.participant_repo.create({
-                "id": str(uuid.uuid4()),
-                "challenge_hub_id": challenge_id,
-                "user_id": creator_id,
-                "role": "leader"
-            })
-
-            # 4. Challenge mesajını gönder (buton ile)
-            # Önce belirtilen kanala, yoksa hub channel'a, yoksa creator'a DM
+            # 3. Challenge mesajını gönder (buton ile)
+            # NOT: Creator'ı challenge_participants tablosuna ekleme,
+            # zaten challenge_hubs.creator_id'de tutuluyor.
+            # Böylece team_size sadece katılımcıları sayar (creator hariç).
             target_channel = channel_id or self._get_hub_channel()
             if target_channel:
                 blocks = [
@@ -111,7 +163,7 @@ class ChallengeHubService:
                         "type": "header",
                         "text": {
                             "type": "plain_text",
-                            "text": "🔥 Yeni Challenge Açıldı!",
+                            "text": "🚀 YENİ CHALLENGE AÇILDI!",
                             "emoji": True
                         }
                     },
@@ -120,13 +172,22 @@ class ChallengeHubService:
                         "text": {
                             "type": "mrkdwn",
                             "text": (
-                                f"*Tema:* {self._get_theme_icon(theme)} {theme}\n"
-                                f"*Takım:* {team_size} kişi\n"
-                                f"*Süre:* {deadline_hours} saat\n"
-                                f"*Zorluk:* {difficulty.capitalize()}\n\n"
-                                f"Katılmak isteyenler butona tıklayın:"
+                                f"👤 <@{creator_id}> *challenge başlattı!*\n\n"
+                                "🎯 *Mini Hackathon'a Katılın!*\n\n"
+                                f"👥 *Takım Büyüklüğü:* Challenge sahibi + {team_size} kişi = *Toplam {team_size + 1} kişi*\n"
+                                f"🎲 *Tema & Proje:* Takım dolunca otomatik seçilecek\n"
+                                f"⏱️ *Süre:* Proje bazlı belirlenecek\n\n"
+                                "✨ *Ne Olacak?*\n"
+                                "• Takım dolunca özel challenge kanalı açılacak\n"
+                                "• Random bir tema ve proje seçilecek\n"
+                                "• LLM ile projeye özel özellikler eklenecek\n"
+                                "• Takım çalışması ile projeyi tamamlayacaksınız\n\n"
+                                "👇 *Katılmak için butona tıklayın:*"
                             )
                         }
+                    },
+                    {
+                        "type": "divider"
                     },
                     {
                         "type": "actions",
@@ -149,26 +210,36 @@ class ChallengeHubService:
                         "elements": [
                             {
                                 "type": "mrkdwn",
-                                "text": f"Challenge ID: `{challenge_id[:8]}...` | Durum: {1}/{team_size} kişi"
+                                "text": f"🆔 Challenge ID: `{challenge_id[:8]}...` | 📊 Durum: *0/{team_size} kişi* katıldı (Challenge sahibi hariç)"
                             }
                         ]
                     }
                 ]
                 self.chat.post_message(
                     channel=target_channel,
-                    text="🔥 Yeni Challenge Açıldı!",
+                    text="🚀 YENİ CHALLENGE AÇILDI! Mini Hackathon'a katılmak için butona tıklayın!",
                     blocks=blocks
                 )
                 
                 # Hub channel ID'yi kaydet
                 self.hub_repo.update(challenge_id, {"hub_channel_id": target_channel})
 
-            logger.info(f"[+] Challenge başlatıldı | ID: {challenge_id} | Tema: {theme} | Takım: {team_size}")
+            logger.info(f"[+] Challenge başlatıldı | ID: {challenge_id} | Creator: {creator_id} | Takım Büyüklüğü (creator hariç): {team_size}")
 
             return {
                 "success": True,
                 "challenge_id": challenge_id,
-                "message": f"✅ Challenge başlatıldı! ({1}/{team_size} kişi)"
+                "message": (
+                    "🎉 *Challenge Başarıyla Başlatıldı!*\n\n"
+                    f"📊 *Durum:* 0/{team_size} kişi katıldı (siz hariç)\n"
+                    f"👥 *Toplam Takım:* Siz + {team_size} kişi = {team_size + 1} kişi\n"
+                    f"🎲 *Tema ve Proje:* Takım dolunca otomatik seçilecek\n\n"
+                    "💡 *Sonraki Adımlar:*\n"
+                    "• Challenge mesajındaki butona tıklayarak diğer kişiler katılabilir\n"
+                    "• Takım dolunca özel challenge kanalı otomatik açılacak\n"
+                    "• Siz de kanala otomatik dahil edileceksiniz\n"
+                    "• Proje detayları ve görevler kanalda paylaşılacak"
+                )
             }
 
         except Exception as e:
@@ -188,6 +259,28 @@ class ChallengeHubService:
         Challenge'a katılır.
         """
         try:
+            # 0. Kullanıcının users tablosunda olup olmadığını kontrol et (foreign key için gerekli)
+            if self.db_client:
+                try:
+                    with self.db_client.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT id FROM users WHERE slack_id = ?", (user_id,))
+                        user_exists = cursor.fetchone()
+                        
+                        if not user_exists:
+                            # Kullanıcı yoksa otomatik ekle (minimal bilgilerle)
+                            logger.info(f"[i] Kullanıcı users tablosunda yok, otomatik ekleniyor: {user_id}")
+                            user_uuid = str(uuid.uuid4())
+                            cursor.execute("""
+                                INSERT INTO users (id, slack_id, full_name, created_at, updated_at)
+                                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            """, (user_uuid, user_id, f"User {user_id}"))
+                            conn.commit()
+                            logger.info(f"[+] Kullanıcı otomatik eklendi: {user_id} (ID: {user_uuid})")
+                except Exception as e:
+                    logger.warning(f"[!] Kullanıcı kontrolü/ekleme hatası: {e}")
+                    # Hata olsa bile devam et, belki kullanıcı zaten var
+            
             # 1. Challenge bul
             if challenge_id:
                 challenge = self.hub_repo.get(challenge_id)
@@ -203,7 +296,15 @@ class ChallengeHubService:
 
             challenge_id = challenge["id"]
 
-            # 2. Kullanıcı zaten katılmış mı?
+            # 2. Kullanıcı challenge'ın creator'ı mı? (Creator otomatik olarak eklenecek, butona basmasına gerek yok)
+            if user_id == challenge.get("creator_id"):
+                return {
+                    "success": False,
+                    "message": "✅ Siz bu challenge'ın sahibisiniz! Takım dolunca otomatik olarak challenge kanalına ekleneceksiniz.",
+                    "error_code": "USER_IS_CREATOR"
+                }
+
+            # 3. Kullanıcı zaten katılmış mı?
             existing = self.participant_repo.get_by_challenge_and_user(challenge_id, user_id)
             if existing:
                 return {
@@ -212,7 +313,7 @@ class ChallengeHubService:
                     "error_code": "ALREADY_PARTICIPATING"
                 }
 
-            # 3. Challenge durumu kontrolü
+            # 4. Challenge durumu kontrolü
             if challenge["status"] != "recruiting":
                 return {
                     "success": False,
@@ -220,7 +321,7 @@ class ChallengeHubService:
                     "error_code": "CHALLENGE_NOT_RECRUITING"
                 }
 
-            # 4. Takım dolu mu?
+            # 5. Takım dolu mu?
             current_participants = self.participant_repo.get_team_members(challenge_id)
             if len(current_participants) >= challenge["team_size"]:
                 return {
@@ -229,16 +330,56 @@ class ChallengeHubService:
                     "error_code": "TEAM_FULL"
                 }
 
-            # 5. Kullanıcının başka aktif challenge'ı var mı?
-            active_challenges = self.participant_repo.get_user_active_challenges(user_id)
-            if active_challenges and active_challenges[0]["id"] != challenge_id:
+            # 6. Kullanıcının başka aktif challenge'ı var mı? (Katılımcı VEYA creator olarak)
+            # Bir kişi sadece tek bir aktif challenge'da bulunabilir!
+            active_challenges = []
+            
+            # A) Katılımcı olarak aktif challenge'ları kontrol et (mevcut challenge hariç)
+            try:
+                participant_challenges = self.participant_repo.get_user_active_challenges(user_id)
+                if participant_challenges:
+                    # Mevcut challenge'a katılmaya çalışıyor, onu hariç tut
+                    other_challenges = [c for c in participant_challenges if c.get("id") != challenge_id]
+                    if other_challenges:
+                        active_challenges.extend(other_challenges)
+            except Exception as e:
+                logger.warning(f"[!] Participant challenge kontrolü hatası: {e}")
+            
+            # B) Creator olarak aktif challenge'ları kontrol et
+            try:
+                if self.db_client:
+                    with self.db_client.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT * FROM challenge_hubs
+                            WHERE creator_id = ? AND status IN ('recruiting', 'active')
+                        """, (user_id,))
+                        rows = cursor.fetchall()
+                        creator_challenges = [dict(row) for row in rows]
+                        if creator_challenges:
+                            active_challenges.extend(creator_challenges)
+            except Exception as e:
+                logger.warning(f"[!] Creator challenge kontrolü hatası: {e}")
+            
+            # Eğer herhangi bir aktif challenge varsa (katılımcı veya creator), yeni challenge'a katılamaz
+            if active_challenges:
+                challenge_info = active_challenges[0]
+                challenge_status = challenge_info.get('status', 'unknown')
+                other_challenge_id = challenge_info.get('id', 'unknown')[:8]
+                
                 return {
                     "success": False,
-                    "message": f"❌ Zaten aktif bir challenge'ınız var. Önce onu tamamlayın.",
+                    "message": (
+                        f"❌ *Zaten Aktif Bir Challenge'ınız Var!*\n\n"
+                        f"📊 *Durum:* {challenge_status.upper()}\n"
+                        f"🆔 *Challenge ID:* `{other_challenge_id}...`\n\n"
+                        f"💡 *Not:* Bir kişi aynı anda sadece tek bir aktif challenge'da bulunabilir.\n"
+                        f"Mevcut challenge'ınızı tamamladıktan sonra başka bir challenge'a katılabilirsiniz."
+                    ),
                     "error_code": "USER_HAS_ACTIVE_CHALLENGE"
                 }
 
-            # 6. Katılımcı ekle
+            # 7. Katılımcı ekle
             self.participant_repo.create({
                 "id": str(uuid.uuid4()),
                 "challenge_hub_id": challenge_id,
@@ -246,7 +387,7 @@ class ChallengeHubService:
                 "role": "member"
             })
 
-            # 7. Takım doldu mu kontrol et
+            # 8. Takım doldu mu kontrol et
             updated_participants = self.participant_repo.get_team_members(challenge_id)
             participant_count = len(updated_participants)
 
@@ -254,21 +395,97 @@ class ChallengeHubService:
             hub_channel_id = challenge.get("hub_channel_id")
             if hub_channel_id:
                 try:
+                    # Daha belirgin katılım mesajı
+                    remaining = challenge['team_size'] - participant_count
+                    total_team = challenge['team_size'] + 1  # Owner + katılımcılar
+                    if remaining > 0:
+                        message_text = (
+                            f"🎉 *Yeni Katılımcı!*\n\n"
+                            f"📊 *Durum:* {participant_count}/{challenge['team_size']} katılımcı katıldı (Owner hariç)\n"
+                            f"👥 *Toplam Takım:* Owner + {participant_count} katılımcı = {participant_count + 1}/{total_team} kişi\n"
+                            f"⏳ *Kalan:* {remaining} kişi daha gerekli\n\n"
+                            "💡 Takım dolunca challenge otomatik başlayacak!"
+                        )
+                    else:
+                        message_text = (
+                            f"🎊 *TAKIM DOLDU!*\n\n"
+                            f"✅ {participant_count}/{challenge['team_size']} katılımcı katıldı (Owner hariç)\n"
+                            f"👥 *Toplam Takım:* Owner + {participant_count} katılımcı = {total_team} kişi\n"
+                            f"🚀 Challenge başlatılıyor...\n\n"
+                            "Özel challenge kanalı açılıyor, proje detayları paylaşılacak!"
+                        )
+                    
                     self.chat.post_message(
                         channel=hub_channel_id,
-                        text=f"✅ Yeni katılımcı! ({participant_count}/{challenge['team_size']} kişi)"
+                        text=message_text,
+                        blocks=[{
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": message_text
+                            }
+                        }]
                     )
                 except Exception as e:
                     logger.debug(f"[i] Hub kanalına mesaj gönderilemedi: {e}")
 
-            # 8. Takım dolduysa challenge'ı başlat
+            # 9. Takım dolduysa challenge'ı başlat
+            challenge_started = False
+            challenge_start_error = False
             if participant_count >= challenge["team_size"]:
-                await self._start_challenge(challenge_id)
+                try:
+                    await self._start_challenge(challenge_id)
+                    challenge_started = True
+                    logger.info(f"[+] Challenge otomatik başlatıldı | ID: {challenge_id} | Takım: {participant_count}/{challenge['team_size']}")
+                except Exception as e:
+                    logger.error(f"[X] Challenge başlatılırken hata: {e}", exc_info=True)
+                    challenge_start_error = True
+                    # Hata olsa bile kullanıcıya katılım başarısı mesajı gönder
+
+            # Kullanıcıya dönüş mesajı
+            remaining = challenge['team_size'] - participant_count
+            total_team = challenge['team_size'] + 1  # Owner + katılımcılar
+            
+            if challenge_started:
+                message = (
+                    f"🎊 *TAKIM DOLDU VE CHALLENGE BAŞLATILDI!*\n\n"
+                    f"✅ {participant_count}/{challenge['team_size']} katılımcı katıldı (Owner hariç)\n"
+                    f"👥 *Toplam Takım:* Owner + {participant_count} katılımcı = {total_team} kişi\n"
+                    f"🚀 Challenge başlatıldı!\n\n"
+                    "Özel challenge kanalı açıldı, proje detayları paylaşıldı. Kanalınızı kontrol edin!"
+                )
+            elif challenge_start_error:
+                # Takım doldu ama başlatma hatası oldu
+                message = (
+                    f"⚠️ *TAKIM DOLDU AMA BAŞLATMA HATASI!*\n\n"
+                    f"✅ {participant_count}/{challenge['team_size']} katılımcı katıldı (Owner hariç)\n"
+                    f"👥 *Toplam Takım:* Owner + {participant_count} katılımcı = {total_team} kişi\n"
+                    f"❌ Challenge başlatılırken bir hata oluştu.\n\n"
+                    "Lütfen admin ile iletişime geçin veya yeni bir challenge başlatın."
+                )
+            elif remaining > 0:
+                message = (
+                    f"🎉 *Challenge'a Başarıyla Katıldınız!*\n\n"
+                    f"📊 *Mevcut Durum:* {participant_count}/{challenge['team_size']} katılımcı katıldı (Owner hariç)\n"
+                    f"👥 *Toplam Takım:* Owner + {participant_count} katılımcı = {participant_count + 1}/{total_team} kişi\n"
+                    f"⏳ *Kalan:* {remaining} kişi daha gerekli\n\n"
+                    "💡 Takım dolunca challenge otomatik başlayacak ve özel kanal açılacak!"
+                )
+            else:
+                # Takım doldu ama henüz başlatılmadı (beklemede)
+                message = (
+                    f"🎊 *TAKIM DOLDU!*\n\n"
+                    f"✅ {participant_count}/{challenge['team_size']} katılımcı katıldı (Owner hariç)\n"
+                    f"👥 *Toplam Takım:* Owner + {participant_count} katılımcı = {total_team} kişi\n"
+                    f"🚀 Challenge başlatılıyor...\n\n"
+                    "Özel challenge kanalı açılıyor, proje detayları paylaşılacak!"
+                )
 
             return {
                 "success": True,
-                "message": f"✅ Challenge'a katıldınız! ({participant_count}/{challenge['team_size']} kişi)",
-                "challenge_id": challenge_id
+                "message": message,
+                "challenge_id": challenge_id,
+                "challenge_started": challenge_started
             }
 
         except Exception as e:
@@ -282,84 +499,197 @@ class ChallengeHubService:
     async def _start_challenge(self, challenge_id: str):
         """
         Challenge'ı başlatır (takım dolduğunda).
+        Random tema ve proje seçer, süreyi DB'den alır.
         """
         try:
+            import random
+            from src.repositories import ChallengeThemeRepository
+            
             challenge = self.hub_repo.get(challenge_id)
             if not challenge:
+                logger.error(f"[X] Challenge bulunamadı: {challenge_id}")
+                raise ValueError(f"Challenge bulunamadı: {challenge_id}")
+
+            # Challenge zaten başlamış mı kontrol et
+            if challenge.get("status") == "active":
+                logger.warning(f"[!] Challenge zaten aktif: {challenge_id}")
                 return
 
-            # 1. Proje seç ve özelleştir
-            project = self.project_repo.get_random_project(challenge["theme"])
+            # 1. Random tema seç
+            if not self.db_client:
+                # Eğer db_client yoksa, mevcut theme_repo'yu kullan
+                active_themes = self.theme_repo.get_active_themes()
+            else:
+                theme_repo = ChallengeThemeRepository(self.db_client)
+                active_themes = theme_repo.get_active_themes()
+            
+            if not active_themes:
+                logger.error("[X] Aktif tema bulunamadı")
+                raise ValueError("Aktif tema bulunamadı")
+            
+            selected_theme = random.choice(active_themes)
+            theme_name = selected_theme["name"]
+            logger.info(f"[i] Tema seçildi: {theme_name}")
+            
+            # 2. Random proje seç (tema bazlı)
+            project = self.project_repo.get_random_project(theme_name)
             if not project:
-                logger.error(f"[X] Tema için proje bulunamadı: {challenge['theme']}")
-                return
+                logger.error(f"[X] Tema için proje bulunamadı: {theme_name}")
+                raise ValueError(f"Tema için proje bulunamadı: {theme_name}")
+
+            logger.info(f"[i] Proje seçildi: {project.get('name', 'N/A')}")
+
+            # 3. Süreyi DB'den al (proje bazlı) - Minimum 72 saat
+            deadline_hours = project.get("estimated_hours", 48)
+            # Minimum süre: 72 saat
+            if deadline_hours < 72:
+                deadline_hours = 72
+                logger.info(f"[i] Süre minimum 72 saate ayarlandı (proje: {deadline_hours} saat < 72)")
+            difficulty = project.get("difficulty_level", "intermediate")
+            logger.info(f"[i] Süre belirlendi: {deadline_hours} saat | Zorluk: {difficulty}")
 
             # LLM ile özelleştir
-            enhanced_project = await self.enhancement.enhance_project(
-                base_project=project,
-                team_size=challenge["team_size"],
-                deadline_hours=challenge["deadline_hours"],
-                theme=challenge["theme"]
-            )
+            try:
+                enhanced_project = await self.enhancement.enhance_project(
+                    base_project=project,
+                    team_size=challenge["team_size"],
+                    deadline_hours=deadline_hours,
+                    theme=theme_name
+                )
+                logger.info("[+] Proje LLM ile özelleştirildi")
+            except Exception as e:
+                logger.warning(f"[!] LLM özelleştirme hatası, orijinal proje kullanılıyor: {e}")
+                enhanced_project = project
 
-            # 2. Challenge kanalı aç
+            # 4. Challenge kanalı aç
             channel_suffix = str(uuid.uuid4())[:8]
-            channel_name = f"challenge-{challenge['theme'].lower().replace(' ', '-')}-{channel_suffix}"
+            channel_name = f"challenge-{theme_name.lower().replace(' ', '-').replace('_', '-')}-{channel_suffix}"
             
-            challenge_channel = self.conv.create_channel(
-                name=channel_name,
-                is_private=True
-            )
-            challenge_channel_id = challenge_channel["id"]
+            try:
+                challenge_channel = self.conv.create_channel(
+                    name=channel_name,
+                    is_private=True
+                )
+                challenge_channel_id = challenge_channel["id"]
+                logger.info(f"[+] Challenge kanalı oluşturuldu: #{channel_name} (ID: {challenge_channel_id})")
+            except Exception as e:
+                logger.error(f"[X] Challenge kanalı oluşturulamadı: {e}", exc_info=True)
+                raise
 
-            # 3. Katılımcıları kanala ekle
+            # 5. Katılımcıları ve owner'ı kanala ekle (önce kullanıcıları ekle, sonra topic ayarla)
             participants = self.participant_repo.get_team_members(challenge_id)
             user_ids = [p["user_id"] for p in participants]
-            self.conv.invite_users(challenge_channel_id, user_ids)
+            
+            # Owner'ı ekle (creator_id)
+            creator_id = challenge.get("creator_id")
+            if creator_id and creator_id not in user_ids:
+                user_ids.append(creator_id)
+            
+            logger.info(f"[i] Kanal davet listesi: {len(user_ids)} kullanıcı")
+            
+            # User token ile oluşturulan kanal olduğu için user token kullanılacak (otomatik)
+            try:
+                self.conv.invite_users(challenge_channel_id, user_ids)
+                logger.info(f"[+] {len(user_ids)} kullanıcı challenge kanalına davet edildi")
+            except Exception as e:
+                logger.warning(f"[!] Kullanıcılar kanala davet edilirken hata (devam ediliyor): {e}")
 
-            # 4. Challenge'ı güncelle
-            deadline = datetime.now() + timedelta(hours=challenge["deadline_hours"])
-            self.hub_repo.update(challenge_id, {
+            # 6. Kanal topic ve purpose'unu ayarla (kullanıcılar davet edildikten sonra - kanal hazır olacak)
+            try:
+                import time
+                # Kısa bir gecikme ekle (kanalın tam olarak hazır olması için)
+                time.sleep(1)
+                
+                topic_text = f"Challenge: {project.get('name', 'Proje')} | Süre: {deadline_hours} saat | ⚠️ Lütfen kanala başka kişileri davet etmeyin"
+                purpose_text = f"Challenge kanalı - {theme_name} teması | Takım: {challenge['team_size'] + 1} kişi | Bu kanal sadece challenge takımı için oluşturulmuştur. Lütfen kanala başka kişileri davet etmeyin."
+                
+                topic_success = self.conv.set_topic(challenge_channel_id, topic_text)
+                purpose_success = self.conv.set_purpose(challenge_channel_id, purpose_text)
+                
+                if topic_success and purpose_success:
+                    logger.info(f"[+] Kanal topic ve purpose ayarlandı: {challenge_channel_id}")
+                else:
+                    logger.warning(f"[!] Kanal topic/purpose ayarlanamadı (non-critical): {challenge_channel_id}")
+            except Exception as e:
+                # Topic/purpose ayarlanmasa bile challenge devam edebilir
+                logger.warning(f"[!] Kanal topic/purpose ayarlanırken hata (devam ediliyor): {e}")
+
+            # 7. Challenge'ı güncelle
+            deadline = datetime.now() + timedelta(hours=deadline_hours)
+            update_data = {
                 "status": "active",
+                "theme": theme_name,
                 "challenge_channel_id": challenge_channel_id,
                 "selected_project_id": project["id"],
+                "deadline_hours": deadline_hours,
+                "difficulty": difficulty,
                 "llm_customizations": json.dumps(enhanced_project.get("llm_enhanced_features", [])),
                 "started_at": datetime.now().isoformat(),
                 "deadline": deadline.isoformat()
-            })
+            }
+            
+            self.hub_repo.update(challenge_id, update_data)
+            logger.info(f"[+] Challenge güncellendi: {challenge_id}")
 
-            # 5. Challenge içeriğini kanala gönder
-            await self._post_challenge_content(challenge_channel_id, enhanced_project, challenge)
+            # 8. Challenge içeriğini kanala gönder
+            try:
+                await self._post_challenge_content(challenge_channel_id, enhanced_project, challenge, theme_name, deadline_hours)
+                logger.info(f"[+] Challenge içeriği kanala gönderildi: {challenge_channel_id}")
+            except Exception as e:
+                logger.error(f"[X] Challenge içeriği gönderilemedi: {e}", exc_info=True)
+                # İçerik gönderilemese bile devam et
 
-            # 6. Deadline sonrası kapatma görevi planla
-            self.cron.add_once_job(
-                func=self._close_challenge,
-                delay_minutes=challenge["deadline_hours"] * 60,
-                job_id=f"close_challenge_{challenge_id}",
-                args=[challenge_id, challenge_channel_id]
-            )
+            # 9. Deadline sonrası kapatma görevi planla
+            try:
+                self.cron.add_once_job(
+                    func=self._close_challenge,
+                    delay_minutes=deadline_hours * 60,
+                    job_id=f"close_challenge_{challenge_id}",
+                    args=[challenge_id, challenge_channel_id]
+                )
+                logger.info(f"[+] Challenge kapatma görevi planlandı: {deadline_hours} saat sonra")
+            except Exception as e:
+                logger.warning(f"[!] Challenge kapatma görevi planlanamadı: {e}")
 
-            logger.info(f"[+] Challenge başlatıldı | ID: {challenge_id} | Kanal: {challenge_channel_id}")
+            # 10. Challenge başlatıldıktan sonra hemen yetkisiz kullanıcı kontrolü yap
+            try:
+                import time
+                time.sleep(5)  # Kullanıcıların kanala eklenmesi ve Slack'in senkronize olması için bekleme
+                self.monitor_challenge_channels()
+                logger.info(f"[+] Challenge kanalı kontrol edildi: {challenge_channel_id}")
+            except Exception as e:
+                logger.warning(f"[!] Challenge kanalı kontrol edilemedi: {e}")
+
+            logger.info(f"[+] Challenge başarıyla başlatıldı | ID: {challenge_id} | Tema: {theme_name} | Kanal: {challenge_channel_id}")
 
         except Exception as e:
             logger.error(f"[X] ChallengeHubService._start_challenge hatası: {e}", exc_info=True)
+            # Hata durumunda challenge durumunu "failed" olarak işaretle
+            try:
+                self.hub_repo.update(challenge_id, {"status": "failed"})
+            except:
+                pass
+            raise
 
     async def _post_challenge_content(
         self,
         channel_id: str,
         project: Dict,
-        challenge: Dict
+        challenge: Dict,
+        theme_name: str,
+        deadline_hours: int
     ):
         """
-        Challenge içeriğini kanala gönderir.
+        Challenge içeriğini kanala gönderir - Önce açıklama, sonra proje detayları.
         """
         try:
-            blocks = [
+            # 1. ÖNCE: Challenge nedir ve ne bekleniyor açıklaması
+            intro_blocks = [
                 {
                     "type": "header",
                     "text": {
                         "type": "plain_text",
-                        "text": f"🎯 Challenge Başladı: {project.get('name', 'Proje')}",
+                        "text": "🚀 CHALLENGE BAŞLADI!",
                         "emoji": True
                     }
                 },
@@ -367,11 +697,105 @@ class ChallengeHubService:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*Açıklama:*\n{project.get('description', '')}"
+                        "text": (
+                            "🎯 *Challenge Nedir?*\n\n"
+                            "Challenge, takım halinde belirli bir süre içinde bir proje geliştirmenizi sağlayan "
+                            "mini bir hackathon deneyimidir. Bu challenge'da birlikte çalışarak yeni beceriler "
+                            "öğrenecek, takım çalışması deneyimi kazanacak ve gerçek bir proje üreteceksiniz.\n\n"
+                            "💡 *Sizden Ne Bekleniyor?*\n\n"
+                            "• *Takım Çalışması:* Görevleri birlikte planlayın ve paylaşın\n"
+                            "• *Proje Geliştirme:* Belirlenen süre içinde projeyi tamamlayın\n"
+                            "• *İletişim:* Bu kanalda aktif olun, sorularınızı paylaşın\n"
+                            "• *Öğrenme:* Yeni teknolojiler ve yöntemler deneyin\n"
+                            "• *Eğlence:* Eğlenerek öğrenin ve takım arkadaşlarınızla iyi vakit geçirin\n\n"
+                            "⏱️ *Süre:* Challenge'ınız *{deadline_hours} saat* içinde tamamlanmalı.\n"
+                            "📊 *Takım:* {team_size} kişilik bir takımsınız (Challenge sahibi + {participants} katılımcı).\n\n"
+                            "🎉 *Başarılar dileriz!*"
+                        ).format(
+                            deadline_hours=deadline_hours,
+                            team_size=challenge['team_size'] + 1,
+                            participants=challenge['team_size']
+                        )
                     }
                 },
                 {"type": "divider"}
             ]
+            
+            # İlk mesajı gönder (açıklama)
+            self.chat.post_message(
+                channel=channel_id,
+                text="🚀 CHALLENGE BAŞLADI! Challenge nedir ve sizden ne bekleniyor?",
+                blocks=intro_blocks
+            )
+            
+            # 2. SONRA: Proje detayları
+            project_blocks = [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"📋 Proje: {project.get('name', 'Proje')}",
+                        "emoji": True
+                    }
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Tema:*\n{self._get_theme_icon(theme_name)} {theme_name}"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Süre:*\n{deadline_hours} saat"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Takım:*\n{challenge['team_size'] + 1} kişi (Owner + {challenge['team_size']} katılımcı)"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Zorluk:*\n{project.get('difficulty_level', 'intermediate').capitalize()}"
+                        }
+                    ]
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*📝 Proje Açıklaması:*\n{project.get('description', '')}"
+                    }
+                },
+                {"type": "divider"}
+            ]
+            
+            # Başarı kriterleri
+            objectives = project.get("objectives", [])
+            if isinstance(objectives, str):
+                try:
+                    objectives = json.loads(objectives)
+                except:
+                    objectives = []
+            
+            if objectives:
+                project_blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*✅ Başarılı Olmak İçin Yapılması Gerekenler:*"
+                    }
+                })
+                
+                for i, obj in enumerate(objectives[:10], 1):  # İlk 10 hedef
+                    project_blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*{i}.* {obj}"
+                        }
+                    })
+                project_blocks.append({"type": "divider"})
 
             # Görevler
             tasks = project.get("tasks", [])
@@ -382,11 +806,11 @@ class ChallengeHubService:
                     tasks = []
 
             if tasks:
-                blocks.append({
+                project_blocks.append({
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": "*📋 Görevler:*"
+                        "text": "*📋 Görevler ve Zaman Planı:*"
                     }
                 })
 
@@ -395,14 +819,14 @@ class ChallengeHubService:
                     task_desc = task.get("description", "")
                     task_hours = task.get("estimated_hours", 8)
                     
-                    blocks.append({
+                    project_blocks.append({
                         "type": "section",
                         "text": {
                             "type": "mrkdwn",
                             "text": (
                                 f"*{i}. {task_title}*\n"
                                 f"{task_desc}\n"
-                                f"⏱️ Tahmini Süre: {task_hours} saat"
+                                f"⏱️ *Tahmini Süre:* {task_hours} saat"
                             )
                         }
                     })
@@ -410,41 +834,111 @@ class ChallengeHubService:
             # LLM özellikleri
             llm_features = project.get("llm_enhanced_features", [])
             if llm_features:
-                blocks.append({"type": "divider"})
-                blocks.append({
+                project_blocks.append({"type": "divider"})
+                project_blocks.append({
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": "*✨ LLM Özelleştirmeleri:*"
+                        "text": "*✨ LLM ile Eklenen Özel Özellikler:*\n\nBu özellikler projenize özel olarak eklenmiştir. Projeyi daha ilginç ve öğretici hale getirmek için tasarlanmıştır."
                     }
                 })
 
                 for feature in llm_features:
-                    blocks.append({
+                    project_blocks.append({
                         "type": "section",
                         "text": {
                             "type": "mrkdwn",
                             "text": (
-                                f"*{feature.get('name', 'Özellik')}*\n"
+                                f"*🎨 {feature.get('name', 'Özellik')}*\n"
                                 f"{feature.get('description', '')}"
                             )
                         }
                     })
 
+            # Teslim edilecekler (deliverables)
+            deliverables = project.get("deliverables", [])
+            if isinstance(deliverables, str):
+                try:
+                    deliverables = json.loads(deliverables)
+                except:
+                    deliverables = []
+            
+            if deliverables:
+                project_blocks.append({"type": "divider"})
+                project_blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*📦 Teslim Edilecekler:*"
+                    }
+                })
+                
+                for i, deliverable in enumerate(deliverables[:10], 1):
+                    project_blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*{i}.* {deliverable}"
+                        }
+                    })
+
             # Süre bilgisi
-            blocks.append({"type": "divider"})
-            blocks.append({
+            project_blocks.append({"type": "divider"})
+            deadline_dt = datetime.now() + timedelta(hours=deadline_hours)
+            project_blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"⏰ *Süre:* {challenge['deadline_hours']} saat\n📅 *Bitiş:* {challenge.get('deadline', 'N/A')}"
+                    "text": (
+                        f"⏰ *Toplam Süre:* {deadline_hours} saat\n"
+                        f"📅 *Bitiş Tarihi:* {deadline_dt.strftime('%d.%m.%Y %H:%M')}\n\n"
+                        f"💡 *İpucu:* Görevleri takım arkadaşlarınızla paylaşın ve zamanı verimli kullanın!"
+                    )
                 }
             })
 
+            # İkinci mesajı gönder (proje detayları)
             self.chat.post_message(
                 channel=channel_id,
-                text=f"🎯 Challenge Başladı: {project.get('name', 'Proje')}",
-                blocks=blocks
+                text=f"📋 Proje: {project.get('name', 'Proje')} - Detaylar, görevler ve teslim edilecekler",
+                blocks=project_blocks
+            )
+            
+            # 3. Kanal kuralları ve önemli bilgiler
+            rules_blocks = [
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "📌 *KANAL KURALLARI VE ÖNEMLİ BİLGİLER*"
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            "⚠️ *ÖNEMLİ:*\n\n"
+                            "• Bu kanal sadece challenge takımı için oluşturulmuştur\n"
+                            "• *Lütfen kanala başka kişileri davet etmeyin*\n"
+                            "• Kanal sadece challenge süresi boyunca aktif kalacaktır\n"
+                            "• Challenge bitince kanal otomatik olarak kapatılacaktır\n\n"
+                            "💡 *İletişim:*\n"
+                            "• Tüm sorularınızı bu kanalda paylaşabilirsiniz\n"
+                            "• Takım arkadaşlarınızla işbirliği yapın\n"
+                            "• Proje ilerlemesini bu kanalda paylaşın\n\n"
+                            "🎯 *Hedef:* Belirlenen süre içinde projeyi tamamlamak ve öğrenmek!"
+                        )
+                    }
+                }
+            ]
+            
+            # Üçüncü mesajı gönder (kanal kuralları)
+            self.chat.post_message(
+                channel=channel_id,
+                text="📌 Kanal kuralları ve önemli bilgiler",
+                blocks=rules_blocks
             )
 
         except Exception as e:
@@ -455,13 +949,22 @@ class ChallengeHubService:
         Challenge'ı kapatır (deadline sonrası).
         """
         try:
-            # Mesajları analiz et, özet gönder, kanalı arşivle
-            # (Kahve/yardım kanalları gibi)
-            self.conv.archive_channel(channel_id)
+            # Challenge'ı tamamlandı olarak işaretle
             self.hub_repo.update(challenge_id, {
                 "status": "completed",
                 "completed_at": datetime.now().isoformat()
             })
+            
+            # Kanalı arşivle (kapat)
+            try:
+                success = self.conv.archive_channel(channel_id)
+                if success:
+                    logger.info(f"[+] Challenge kanalı arşivlendi (kapatıldı) | ID: {challenge_id}")
+                else:
+                    logger.warning(f"[!] Challenge kanalı arşivlenemedi | ID: {challenge_id}")
+            except Exception as e:
+                logger.warning(f"[!] Challenge kanalı arşivlenirken hata: {e}")
+            
             logger.info(f"[+] Challenge kapatıldı | ID: {challenge_id}")
         except Exception as e:
             logger.error(f"[X] Challenge kapatma hatası: {e}", exc_info=True)
@@ -473,6 +976,281 @@ class ChallengeHubService:
         # Settings'den al veya varsayılan olarak None döndür
         # Kullanıcı #challenge-hub kanalını manuel oluşturmalı
         return None
+
+    def check_and_remove_unauthorized_user(self, channel_id: str, user_id: str) -> Dict[str, Any]:
+        """
+        Challenge kanalına yetkisiz kullanıcı katıldığında çağrılır.
+        Kullanıcı yetkisiz ise kanaldan çıkarır ve uyarı gönderir.
+        """
+        try:
+            # 1. Bu kanal bir challenge kanalı mı?
+            challenge = self.hub_repo.get_by_channel_id(channel_id)
+            if not challenge:
+                # Bu bir challenge kanalı değil, işlem yapma
+                return {"is_challenge_channel": False, "action": "none"}
+            
+            # 2. Challenge'ın yetkili kullanıcılarını al
+            authorized_users = set()
+            
+            # Creator'ı ekle
+            creator_id = challenge.get("creator_id")
+            if creator_id:
+                authorized_users.add(creator_id)
+            
+            # Participants'ları ekle
+            participants = self.participant_repo.get_team_members(challenge["id"])
+            for participant in participants:
+                authorized_users.add(participant["user_id"])
+            
+            # 3. Bot'u da ekle (bot her zaman kanalda olmalı)
+            try:
+                bot_info = self.chat.client.auth_test()
+                if bot_info["ok"]:
+                    bot_user_id = bot_info["user_id"]
+                    authorized_users.add(bot_user_id)
+            except Exception as e:
+                logger.warning(f"[!] Bot user ID alınamadı: {e}")
+            
+            # 4. User token sahibini ekle (workspace admin - kanalı oluşturan)
+            # User token sahibi kendisini çıkaramaz (cant_kick_self hatası)
+            try:
+                if self.conv.user_client:
+                    user_token_info = self.conv.user_client.auth_test()
+                    if user_token_info["ok"]:
+                        user_token_owner_id = user_token_info["user_id"]
+                        authorized_users.add(user_token_owner_id)
+                        logger.debug(f"[i] User token sahibi yetkili kullanıcılara eklendi: {user_token_owner_id}")
+            except Exception as e:
+                logger.warning(f"[!] User token sahibi bilgisi alınamadı: {e}")
+            
+            # 5. Kullanıcı yetkili mi?
+            if user_id in authorized_users:
+                # Yetkili kullanıcı, işlem yapma
+                logger.debug(f"[i] Yetkili kullanıcı kanala katıldı: {user_id} | Challenge: {challenge['id']}")
+                return {"is_challenge_channel": True, "is_authorized": True, "action": "none"}
+            
+            # 6. Yetkisiz kullanıcı - kanaldan çıkar
+            logger.warning(f"[!] Yetkisiz kullanıcı challenge kanalına katılmaya çalıştı: {user_id} | Challenge: {challenge['id']} | Kanal: {channel_id}")
+            logger.info(f"[i] Yetkili kullanıcılar: {authorized_users}")
+            
+            try:
+                # Kullanıcıyı kanaldan çıkar
+                logger.info(f"[>] Kullanıcı kanaldan çıkarılıyor: {user_id} | Kanal: {channel_id}")
+                try:
+                    success = self.conv.kick_user(channel_id, user_id)
+                    logger.info(f"[i] kick_user sonucu: {success}")
+                except Exception as kick_error:
+                    logger.error(f"[X] kick_user exception: {kick_error} | Kullanıcı: {user_id} | Kanal: {channel_id}", exc_info=True)
+                    success = False
+                
+                if success:
+                    logger.info(f"[+] Yetkisiz kullanıcı kanaldan çıkarıldı: {user_id} | Challenge: {challenge['id']}")
+                    
+                    # Kullanıcıya DM ile uyarı gönder
+                    try:
+                        dm_channel = self.conv.open_conversation([user_id])
+                        if dm_channel and dm_channel.get("channel"):
+                            dm_id = dm_channel["channel"]["id"]
+                            self.chat.post_message(
+                                channel=dm_id,
+                                text=(
+                                    "⚠️ *Yetkisiz Kanal Erişimi*\n\n"
+                                    "Challenge kanalları sadece challenge takımı için oluşturulmuştur. "
+                                    "Bu kanala katılamazsınız çünkü bu challenge'ın takım üyesi değilsiniz.\n\n"
+                                    "💡 *Not:* Challenge kanallarına sadece challenge sahibi ve takım üyeleri katılabilir. "
+                                    "Lütfen başka challenge kanallarına katılmaya çalışmayın."
+                                ),
+                                blocks=[{
+                                    "type": "section",
+                                    "text": {
+                                        "type": "mrkdwn",
+                                        "text": (
+                                            "⚠️ *Yetkisiz Kanal Erişimi*\n\n"
+                                            "Challenge kanalları sadece challenge takımı için oluşturulmuştur. "
+                                            "Bu kanala katılamazsınız çünkü bu challenge'ın takım üyesi değilsiniz.\n\n"
+                                            "💡 *Not:* Challenge kanallarına sadece challenge sahibi ve takım üyeleri katılabilir. "
+                                            "Lütfen başka challenge kanallarına katılmaya çalışmayın."
+                                        )
+                                    }
+                                }]
+                            )
+                    except Exception as e:
+                        logger.warning(f"[!] DM gönderilemedi: {e}")
+                    
+                    # Challenge kanalına bilgilendirme mesajı gönder
+                    try:
+                        self.chat.post_message(
+                            channel=channel_id,
+                            text=(
+                                f"⚠️ *Yetkisiz Kullanıcı Tespit Edildi*\n\n"
+                                f"<@{user_id}> bu kanala yetkisiz olarak katılmaya çalıştı ve otomatik olarak çıkarıldı.\n\n"
+                                f"💡 *Hatırlatma:* Bu kanal sadece challenge takımı için oluşturulmuştur. "
+                                f"Lütfen kanala başka kişileri davet etmeyin."
+                            ),
+                            blocks=[{
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": (
+                                        f"⚠️ *Yetkisiz Kullanıcı Tespit Edildi*\n\n"
+                                        f"<@{user_id}> bu kanala yetkisiz olarak katılmaya çalıştı ve otomatik olarak çıkarıldı.\n\n"
+                                        f"💡 *Hatırlatma:* Bu kanal sadece challenge takımı için oluşturulmuştur. "
+                                        f"Lütfen kanala başka kişileri davet etmeyin."
+                                    )
+                                }
+                            }]
+                        )
+                    except Exception as e:
+                        logger.warning(f"[!] Challenge kanalına bilgilendirme mesajı gönderilemedi: {e}")
+                    
+                    return {
+                        "is_challenge_channel": True,
+                        "is_authorized": False,
+                        "action": "removed",
+                        "user_id": user_id,
+                        "challenge_id": challenge["id"]
+                    }
+                else:
+                    logger.error(f"[X] Kullanıcı kanaldan çıkarılamadı: {user_id} | Kanal: {channel_id} | Challenge: {challenge['id']}")
+                    
+                    # Admin'e bildirim gönder
+                    try:
+                        from src.core.settings import get_settings
+                        settings = get_settings()
+                        admin_channel = settings.admin_channel_id
+                        
+                        if admin_channel:
+                            self.chat.post_message(
+                                channel=admin_channel,
+                                text=(
+                                    f"⚠️ *Yetkisiz Kullanıcı Çıkarılamadı*\n\n"
+                                    f"Kullanıcı: <@{user_id}>\n"
+                                    f"Challenge: `{challenge['id'][:8]}...`\n"
+                                    f"Kanal: <#{channel_id}>\n\n"
+                                    f"❌ Kullanıcı otomatik olarak çıkarılamadı. Lütfen manuel olarak çıkarın.\n\n"
+                                    f"💡 *Not:* Bot'un `groups:write` ve `channels:write` scope'larına sahip olduğundan emin olun."
+                                ),
+                                blocks=[{
+                                    "type": "section",
+                                    "text": {
+                                        "type": "mrkdwn",
+                                        "text": (
+                                            f"⚠️ *Yetkisiz Kullanıcı Çıkarılamadı*\n\n"
+                                            f"Kullanıcı: <@{user_id}>\n"
+                                            f"Challenge: `{challenge['id'][:8]}...`\n"
+                                            f"Kanal: <#{channel_id}>\n\n"
+                                            f"❌ Kullanıcı otomatik olarak çıkarılamadı. Lütfen manuel olarak çıkarın.\n\n"
+                                            f"💡 *Not:* Bot'un `groups:write` ve `channels:write` scope'larına sahip olduğundan emin olun."
+                                        )
+                                    }
+                                }]
+                            )
+                    except Exception as admin_error:
+                        logger.warning(f"[!] Admin'e bildirim gönderilemedi: {admin_error}")
+                    
+                    return {
+                        "is_challenge_channel": True,
+                        "is_authorized": False,
+                        "action": "failed_to_remove",
+                        "user_id": user_id,
+                        "challenge_id": challenge["id"]
+                    }
+            except Exception as e:
+                logger.error(f"[X] Kullanıcı kanaldan çıkarılırken hata: {e}", exc_info=True)
+                return {
+                    "is_challenge_channel": True,
+                    "is_authorized": False,
+                    "action": "error",
+                    "error": str(e)
+                }
+                
+        except Exception as e:
+            logger.error(f"[X] Yetkisiz kullanıcı kontrolü hatası: {e}", exc_info=True)
+            return {"is_challenge_channel": False, "action": "error", "error": str(e)}
+
+    def monitor_challenge_channels(self):
+        """
+        Tüm aktif challenge kanallarını periyodik olarak kontrol eder.
+        Yetkisiz kullanıcıları tespit edip çıkarır.
+        """
+        try:
+            # Aktif challenge'ları al
+            active_challenges = self.hub_repo.get_all_active()
+            
+            if not active_challenges:
+                logger.debug("[i] Aktif challenge yok, kontrol atlandı")
+                return
+            
+            logger.info(f"[>] Challenge kanalları kontrol ediliyor: {len(active_challenges)} aktif challenge")
+            
+            for challenge in active_challenges:
+                channel_id = challenge.get("challenge_channel_id")
+                if not channel_id:
+                    continue
+                
+                try:
+                    # Kanal üyelerini al
+                    channel_members = set(self.conv.get_members(channel_id))
+                    
+                    # Yetkili kullanıcıları belirle
+                    authorized_users = set()
+                    
+                    # Creator'ı ekle
+                    creator_id = challenge.get("creator_id")
+                    if creator_id:
+                        authorized_users.add(creator_id)
+                    
+                    # Participants'ları ekle
+                    participants = self.participant_repo.get_team_members(challenge["id"])
+                    for participant in participants:
+                        authorized_users.add(participant["user_id"])
+                    
+                    # Bot'u ekle
+                    try:
+                        bot_info = self.chat.client.auth_test()
+                        if bot_info["ok"]:
+                            bot_user_id = bot_info["user_id"]
+                            authorized_users.add(bot_user_id)
+                    except Exception:
+                        pass
+                    
+                    # User token sahibini ekle
+                    try:
+                        if self.conv.user_client:
+                            user_token_info = self.conv.user_client.auth_test()
+                            if user_token_info["ok"]:
+                                user_token_owner_id = user_token_info["user_id"]
+                                authorized_users.add(user_token_owner_id)
+                    except Exception:
+                        pass
+                    
+                    # Yetkisiz kullanıcıları bul
+                    unauthorized_users = channel_members - authorized_users
+                    
+                    if unauthorized_users:
+                        logger.warning(f"[!] Yetkisiz kullanıcılar tespit edildi: {len(unauthorized_users)} kişi | Challenge: {challenge['id']} | Kanal: {channel_id}")
+                        
+                        # Her yetkisiz kullanıcıyı çıkar (rate limit için aralarına gecikme ekle)
+                        import time
+                        for i, user_id in enumerate(unauthorized_users):
+                            try:
+                                result = self.check_and_remove_unauthorized_user(channel_id, user_id)
+                                if result.get("action") == "removed":
+                                    logger.info(f"[+] Yetkisiz kullanıcı çıkarıldı: {user_id} | Challenge: {challenge['id']}")
+                                
+                                # Rate limit'e takılmamak için her işlem arasında kısa gecikme (son kullanıcıdan sonra bekleme yok)
+                                if i < len(unauthorized_users) - 1:
+                                    time.sleep(2)  # 2 saniye bekle (dakikada ~20 request için güvenli)
+                            except Exception as e:
+                                logger.error(f"[X] Kullanıcı çıkarılırken hata: {user_id} | {e}")
+                    else:
+                        logger.debug(f"[i] Challenge kanalı temiz: {challenge['id']} | Kanal: {channel_id}")
+                        
+                except Exception as e:
+                    logger.warning(f"[!] Challenge kanalı kontrol edilemedi: {challenge['id']} | {e}")
+                    
+        except Exception as e:
+            logger.error(f"[X] Challenge kanalları kontrol hatası: {e}", exc_info=True)
 
     def _get_theme_icon(self, theme: str) -> str:
         """Tema için icon döndürür."""

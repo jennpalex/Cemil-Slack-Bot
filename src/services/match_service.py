@@ -117,9 +117,9 @@ class CoffeeMatchService:
                 
                 logger.info(f"[i] Kullanıcı kahve havuzuna eklendi | Kullanıcı: {user_name} ({user_id}) | Bekleyen: {len(self.waiting_pool)} kişi")
                 return (
-                    "☕ Kahve isteğiniz alındı! \\n\\n"
-                    "5 dakika içinde başka biri de kahve isterse eşleşeceksiniz. \\n"
-                    "Eğer kimse çıkmazsa istek otomatik olarak iptal edilecek. ⏳"
+                    "☕ *Kahve İsteğiniz Alındı!*\n\n"
+                    "⏳ 5 dakika içinde başka biri de kahve isterse eşleşeceksiniz.\n"
+                    "Eğer kimse çıkmazsa istek otomatik olarak iptal edilecek."
                 )
             else:
                 logger.warning(f"[!] Kullanıcı zaten havuzda (race condition) | Kullanıcı: {user_name} ({user_id})")
@@ -270,6 +270,7 @@ class CoffeeMatchService:
                 }
             ]
             
+            # Mesajlar bot token ile gönderilir (bot olarak görünür)
             self.chat.post_message(
                 channel=coffee_channel_id,
                 text="☕ Kahve Eşleşmesi",
@@ -419,13 +420,15 @@ class CoffeeMatchService:
                 }]
             )
             
-            # 9. Kanalı arşivle (yardım servisi ile aynı mantık)
-            success = self.conv.archive_channel(coffee_channel_id)
-            
-            if success:
-                logger.info(f"[+] Kahve kanalı başarıyla kapatıldı | Kanal: {coffee_channel_id}")
-            else:
-                logger.warning(f"[!] Kahve kanalı kapatılamadı | Kanal: {coffee_channel_id}")
+            # 9. Kanalı arşivle (kapat)
+            try:
+                success = self.conv.archive_channel(coffee_channel_id)
+                if success:
+                    logger.info(f"[+] Kahve kanalı arşivlendi (kapatıldı) | Kanal: {coffee_channel_id}")
+                else:
+                    logger.warning(f"[!] Kahve kanalı arşivlenemedi | Kanal: {coffee_channel_id}")
+            except Exception as e:
+                logger.warning(f"[!] Kahve kanalı arşivlenirken hata: {e}")
             
             logger.info(f"[+] Eşleşme raporlandı | Kanal: {coffee_channel_id} | Özet: {summary[:50]}...")
 

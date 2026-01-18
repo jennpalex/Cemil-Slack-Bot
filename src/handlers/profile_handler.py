@@ -22,6 +22,10 @@ def setup_profile_handlers(
         user_id = body["user_id"]
         channel_id = body["channel_id"]
         
+        # Payload'ı logla (debug için)
+        import json
+        logger.debug(f"[DEBUG] /profilim payload: {json.dumps(body, indent=2, ensure_ascii=False)}")
+        
         logger.info(f"[>] /profilim komutu geldi | Kullanıcı: {user_id} | Kanal: {channel_id}")
         
         try:
@@ -48,12 +52,17 @@ def setup_profile_handlers(
             if not display_name:
                 display_name = user_data.get('full_name', 'Bilinmiyor')
             
+            # Slack ID'yi al (veritabanından veya body'den)
+            slack_id = user_data.get('slack_id', user_id)
+            birthday = user_data.get('birthday', 'Yok')
+            
             text = (
                 f"👤 *KİMLİK KARTI*\n"
                 f"------------------\n"
                 f"*Ad Soyad:* {display_name}\n"
+                f"*Slack ID:* `{slack_id}`\n"
                 f"*Cohort:* {user_data.get('cohort', 'Belirtilmemiş')}\n"
-                f"*Doğum Tarihi:* {user_data.get('birthday', 'Yok')}\n"
+                f"*Doğum Tarihi:* {birthday}\n"
                 f"------------------"
             )
             
@@ -62,7 +71,7 @@ def setup_profile_handlers(
                 user=user_id,
                 text=text
             )
-            logger.info(f"[+] Profil görüntülendi | Kullanıcı: {user_data.get('full_name', user_id)} ({user_id}) | Cohort: {user_data.get('cohort', 'Yok')}")
+            logger.info(f"[+] Profil görüntülendi | Kullanıcı: {user_data.get('full_name', user_id)} ({user_id}) | Cohort: {user_data.get('cohort', 'Yok')} | Doğum Tarihi: {birthday}")
             
         except Exception as e:
             logger.error(f"[X] Profil görüntüleme hatası | Kullanıcı: {user_id} | Hata: {e}", exc_info=True)

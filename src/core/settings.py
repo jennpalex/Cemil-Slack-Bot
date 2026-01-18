@@ -5,7 +5,7 @@ Pydantic Settings kullanarak environment variable'ları yönetir.
 
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, ConfigDict
 
 
 class BotSettings(BaseSettings):
@@ -14,6 +14,7 @@ class BotSettings(BaseSettings):
     # Slack Ayarları
     slack_bot_token: str = Field(..., description="Slack Bot Token (xoxb-...)")
     slack_app_token: str = Field(..., description="Slack App Token (xapp-...)")
+    slack_user_token: Optional[str] = Field(None, description="Slack User Token (xoxp-...) - Kanal oluşturma için")
     
     # Groq AI Ayarları
     groq_api_key: str = Field(..., description="Groq API Key")
@@ -24,7 +25,11 @@ class BotSettings(BaseSettings):
     
     # Slack Kanal Ayarları
     admin_channel_id: Optional[str] = Field(None, description="Admin kanalı ID")
-    startup_channel: Optional[str] = Field(None, description="Başlangıç mesajı kanalı")
+    startup_channel: Optional[str] = Field(
+        None, 
+        description="Başlangıç mesajı kanalı",
+        validation_alias="SLACK_STARTUP_CHANNEL"
+    )
     
     # GitHub Repo (Opsiyonel)
     github_repo: Optional[str] = Field(None, description="GitHub repository URL")
@@ -76,9 +81,9 @@ class BotSettings(BaseSettings):
 _settings: Optional[BotSettings] = None
 
 
-def get_settings() -> BotSettings:
+def get_settings(reload: bool = False) -> BotSettings:
     """Settings singleton instance döndürür."""
     global _settings
-    if _settings is None:
+    if _settings is None or reload:
         _settings = BotSettings()
     return _settings

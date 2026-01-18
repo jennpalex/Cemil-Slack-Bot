@@ -9,6 +9,7 @@ import asyncio
 from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
+from slack_sdk import WebClient
 
 # --- Core & Clients ---
 from src.core.logger import logger
@@ -99,8 +100,17 @@ logger.info("[+] Client'lar hazır.")
 # ============================================================================
 
 logger.info("[i] Command Manager'lar ilklendiriliyor...")
-chat_manager = ChatManager(app.client)
-conv_manager = ConversationManager(app.client)
+
+# User token varsa kanal oluşturma ve erişim için kullan
+user_client = None
+if settings.slack_user_token:
+    user_client = WebClient(token=settings.slack_user_token)
+    logger.info("[i] User token bulundu - kanal oluşturma ve erişim işlemleri için kullanılacak")
+else:
+    logger.warning("[!] User token bulunamadı - workspace kısıtlamaları kanal oluşturmayı engelleyebilir")
+
+chat_manager = ChatManager(app.client, user_client=user_client)
+conv_manager = ConversationManager(app.client, user_client=user_client)
 user_manager = UserManager(app.client)
 logger.info("[+] Command Manager'lar hazır.")
 
@@ -154,7 +164,8 @@ challenge_hub_service = ChallengeHubService(
     challenge_hub_repo, challenge_participant_repo,
     challenge_project_repo, challenge_submission_repo,
     challenge_theme_repo, user_challenge_stats_repo,
-    challenge_enhancement_service, groq_client, cron_client
+    challenge_enhancement_service, groq_client, cron_client,
+    db_client=db_client
 )
 logger.info("[+] Servisler hazır.")
 
@@ -173,6 +184,62 @@ setup_help_handlers(app, help_service, chat_manager, user_repo)
 setup_statistics_handlers(app, statistics_service, chat_manager, user_repo)
 setup_challenge_handlers(app, challenge_hub_service, chat_manager, user_repo)
 logger.info("[+] Handler'lar kaydedildi.")
+
+# ============================================================================
+# PERİYODİK GÖREVLER (Challenge Kanalı Yetkisiz Kullanıcı Kontrolü)
+# ============================================================================
+
+# Challenge kanallarını periyodik olarak kontrol et (her 1 dakikada bir)
+try:
+    cron_client.add_cron_job(
+        func=challenge_hub_service.monitor_challenge_channels,
+        cron_expression={"minute": "*/1"},  # Her 1 dakikada bir
+        job_id="monitor_challenge_channels"
+    )
+    logger.info("[+] Challenge kanalları periyodik kontrolü başlatıldı (her 1 dakikada bir)")
+except Exception as e:
+    logger.warning(f"[!] Challenge kanalları periyodik kontrolü başlatılamadı: {e}")
+
+# ============================================================================
+# EVENT HANDLERS (Challenge Kanalı Yetkisiz Kullanıcı Kontrolü)
+# ============================================================================
+
+@app.event("member_joined_channel")
+def handle_member_joined_channel(event, client):
+    """
+    Bir kullanıcı kanala katıldığında çağrılır.
+    Challenge kanalları için yetkisiz kullanıcıları tespit edip çıkarır.
+    """
+    try:
+        channel_id = event.get("channel")
+        user_id = event.get("user")
+        
+        logger.info(f"[>] member_joined_channel event tetiklendi | Kullanıcı: {user_id} | Kanal: {channel_id}")
+        
+        if not channel_id or not user_id:
+            logger.warning(f"[!] member_joined_channel event'inde eksik bilgi | channel_id: {channel_id} | user_id: {user_id}")
+            return
+
+        # Challenge kanalı kontrolü ve yetkisiz kullanıcı çıkarma
+        result = challenge_hub_service.check_and_remove_unauthorized_user(channel_id, user_id)
+        
+        if result.get("is_challenge_channel") and not result.get("is_authorized"):
+            action = result.get('action')
+            logger.info(f"[!] Yetkisiz kullanıcı tespit edildi: {user_id} | Kanal: {channel_id} | Aksiyon: {action}")
+            
+            if action == "removed":
+                logger.info(f"[+] Yetkisiz kullanıcı başarıyla çıkarıldı: {user_id}")
+            elif action == "failed_to_remove":
+                logger.error(f"[X] Yetkisiz kullanıcı çıkarılamadı: {user_id} | Kanal: {channel_id}")
+            elif action == "error":
+                logger.error(f"[X] Yetkisiz kullanıcı çıkarma işleminde hata: {result.get('error')}")
+        elif result.get("is_challenge_channel") and result.get("is_authorized"):
+            logger.debug(f"[i] Yetkili kullanıcı kanala katıldı: {user_id} | Kanal: {channel_id}")
+        else:
+            logger.debug(f"[i] Challenge kanalı değil, işlem yapılmadı: {channel_id}")
+        
+    except Exception as e:
+        logger.error(f"[X] member_joined_channel event handler hatası: {e}", exc_info=True)
 
 # ============================================================================
 # GLOBAL HATA YÖNETİMİ

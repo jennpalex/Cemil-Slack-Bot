@@ -11,13 +11,13 @@ class ChallengeHubRepository(BaseRepository):
         super().__init__(db_client, "challenge_hubs")
 
     def get_active_challenge(self) -> Optional[Dict[str, Any]]:
-        """Aktif (recruiting veya active) challenge getirir."""
+        """Katılım için uygun aktif challenge getirir (sadece recruiting durumunda)."""
         try:
             with self.db_client.get_connection() as conn:
                 cursor = conn.cursor()
                 sql = """
                     SELECT * FROM challenge_hubs
-                    WHERE status IN ('recruiting', 'active')
+                    WHERE status = 'recruiting'
                     ORDER BY created_at DESC
                     LIMIT 1
                 """
@@ -48,3 +48,20 @@ class ChallengeHubRepository(BaseRepository):
         except Exception as e:
             logger.error(f"[X] get_all_active hatası: {e}")
             return []
+
+    def get_by_channel_id(self, channel_id: str) -> Optional[Dict[str, Any]]:
+        """Kanal ID'sine göre challenge getirir."""
+        try:
+            with self.db_client.get_connection() as conn:
+                cursor = conn.cursor()
+                sql = """
+                    SELECT * FROM challenge_hubs
+                    WHERE challenge_channel_id = ?
+                    LIMIT 1
+                """
+                cursor.execute(sql, (channel_id,))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"[X] get_by_channel_id hatası: {e}")
+            return None

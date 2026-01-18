@@ -165,17 +165,18 @@ class KnowledgeService:
             logger.error(f"[X] KnowledgeService.ask_question hatası: {e}")
             return "Şu an hafızamı toparlamakta zorlanıyorum, birazdan tekrar sorar mısın? 🧠✨"
 
-    def model_search_context(self, question: str) -> List[Dict]:
+    def model_search_context(self, question: str, top_k: int = 10) -> List[Dict]:
         """Vektör veritabanından bağlamı çeker."""
         # L2 mesafesi için: küçük mesafe = benzer, büyük mesafe = farklı
         # Daha esnek arama stratejisi: Önce geniş arama, sonra filtreleme
         
         # 1. İlk deneme: Geniş arama (threshold yok, sadece en iyi sonuçlar)
-        results = self.vector.search(question, top_k=10, threshold=2.0)  # Çok gevşek threshold
+        results = self.vector.search(question, top_k=top_k, threshold=2.0)  # Çok gevşek threshold
         
         if results and len(results) >= 3:
-            # En iyi 8 sonucu al
-            results = results[:8]
+            # En iyi sonuçları al (top_k'ya göre)
+            max_results = min(top_k, 8)
+            results = results[:max_results]
             logger.info(f"[i] Vector search: {len(results)} eşleşme bulundu | Soru: {question[:50]}...")
             # İlk 3 sonucun skorlarını logla
             for i, res in enumerate(results[:3], 1):
@@ -190,10 +191,11 @@ class KnowledgeService:
         else:
             # Hiç sonuç yoksa, threshold'u tamamen kaldır ve tüm sonuçları al
             logger.warning(f"[!] İlk aramada sonuç bulunamadı | Soru: {question[:50]}... | Threshold kaldırılıyor")
-            results = self.vector.search(question, top_k=10, threshold=999.0)  # Pratik olarak threshold yok
+            results = self.vector.search(question, top_k=top_k, threshold=999.0)  # Pratik olarak threshold yok
             if results:
-                # En iyi 5 sonucu al
-                results = results[:5]
+                # En iyi sonuçları al (top_k'ya göre)
+                max_results = min(top_k, 5)
+                results = results[:max_results]
                 logger.info(f"[i] Threshold kaldırılarak {len(results)} sonuç bulundu")
                 for i, res in enumerate(results[:2], 1):
                     if res.get('score') is not None:
