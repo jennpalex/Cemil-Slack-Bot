@@ -130,6 +130,7 @@ class DatabaseClient(metaclass=SingletonMeta):
                     CREATE TABLE IF NOT EXISTS matches (
                         id TEXT PRIMARY KEY,
                         channel_id TEXT,
+                        coffee_channel_id TEXT,
                         user1_id TEXT,
                         user2_id TEXT,
                         status TEXT DEFAULT 'active',
@@ -137,6 +138,14 @@ class DatabaseClient(metaclass=SingletonMeta):
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+                
+                # Migration: coffee_channel_id kolonu yoksa ekle
+                cursor.execute("PRAGMA table_info(matches)")
+                columns = [column[1] for column in cursor.fetchall()]
+                if 'coffee_channel_id' not in columns:
+                    logger.info("[i] coffee_channel_id kolonu ekleniyor...")
+                    cursor.execute("ALTER TABLE matches ADD COLUMN coffee_channel_id TEXT")
+                    logger.info("[+] coffee_channel_id kolonu eklendi.")
 
                 # Oylama Başlıkları Tablosu (Polls)
                 cursor.execute("""
@@ -211,22 +220,6 @@ class DatabaseClient(metaclass=SingletonMeta):
                     logger.info("[i] help_channel_id kolonu ekleniyor...")
                     cursor.execute("ALTER TABLE help_requests ADD COLUMN help_channel_id TEXT")
                     logger.info("[+] help_channel_id kolonu eklendi.")
-                
-                # İletişim İstekleri Tablosu (Communication Requests)
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS communication_requests (
-                        id TEXT PRIMARY KEY,
-                        requester_id TEXT NOT NULL,
-                        topic TEXT NOT NULL,
-                        description TEXT NOT NULL,
-                        status TEXT DEFAULT 'open',
-                        channel_id TEXT,
-                        communication_channel_id TEXT,
-                        message_ts TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        closed_at TIMESTAMP
-                    )
-                """)
                 
                 conn.commit()
                 logger.debug("[i] Veritabanı tabloları kontrol edildi.")

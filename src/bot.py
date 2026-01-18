@@ -35,8 +35,7 @@ from src.repositories import (
     PollRepository,
     VoteRepository,
     FeedbackRepository,
-    HelpRepository,
-    CommunicationRepository
+    HelpRepository
 )
 
 # --- Services ---
@@ -45,8 +44,7 @@ from src.services import (
     VotingService,
     FeedbackService,
     KnowledgeService,
-    HelpService,
-    CommunicationService
+    HelpService
 )
 
 # --- Handlers ---
@@ -57,8 +55,7 @@ from src.handlers import (
     setup_knowledge_handlers,
     setup_profile_handlers,
     setup_health_handlers,
-    setup_help_handlers,
-    setup_communication_handlers
+    setup_help_handlers
 )
 
 # ============================================================================
@@ -107,7 +104,6 @@ poll_repo = PollRepository(db_client)
 vote_repo = VoteRepository(db_client)
 feedback_repo = FeedbackRepository(db_client)
 help_repo = HelpRepository(db_client)
-communication_repo = CommunicationRepository(db_client)
 logger.info("[+] Repository'ler hazır.")
 
 # ============================================================================
@@ -130,9 +126,6 @@ knowledge_service = KnowledgeService(
 help_service = HelpService(
     chat_manager, conv_manager, user_manager, help_repo, user_repo, cron_client
 )
-communication_service = CommunicationService(
-    chat_manager, conv_manager, user_manager, communication_repo, user_repo, cron_client
-)
 logger.info("[+] Servisler hazır.")
 
 # ============================================================================
@@ -147,7 +140,6 @@ setup_knowledge_handlers(app, knowledge_service, chat_manager, user_repo)
 setup_profile_handlers(app, chat_manager, user_repo)
 setup_health_handlers(app, chat_manager, db_client, groq_client, vector_client)
 setup_help_handlers(app, help_service, chat_manager, user_repo)
-setup_communication_handlers(app, communication_service, chat_manager, user_repo)
 logger.info("[+] Handler'lar kaydedildi.")
 
 # ============================================================================

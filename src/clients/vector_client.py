@@ -88,7 +88,7 @@ class VectorClient(metaclass=SingletonMeta):
             distance = candidate['distance']
             idx = candidate['idx']
             
-            if distance <= threshold:
+                if distance <= threshold:
                 doc = self.documents[idx].copy()
                 doc["score"] = distance
                 results.append(doc)

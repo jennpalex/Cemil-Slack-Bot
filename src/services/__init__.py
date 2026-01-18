@@ -3,7 +3,6 @@ from .voting_service import VotingService
 from .feedback_service import FeedbackService
 from .knowledge_service import KnowledgeService
 from .help_service import HelpService
-from .communication_service import CommunicationService
 
 __all__ = [
     "CoffeeMatchService",
@@ -11,5 +10,4 @@ __all__ = [
     "FeedbackService",
     "KnowledgeService",
     "HelpService",
-    "CommunicationService",
 ]

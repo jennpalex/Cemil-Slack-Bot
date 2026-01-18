@@ -4,7 +4,6 @@ from .poll_repository import PollRepository
 from .vote_repository import VoteRepository
 from .feedback_repository import FeedbackRepository
 from .help_repository import HelpRepository
-from .communication_repository import CommunicationRepository
 
 __all__ = [
     "UserRepository",
@@ -13,5 +12,4 @@ __all__ = [
     "VoteRepository",
     "FeedbackRepository",
     "HelpRepository",
-    "CommunicationRepository",
 ]

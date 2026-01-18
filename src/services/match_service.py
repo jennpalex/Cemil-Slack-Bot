@@ -193,18 +193,38 @@ class CoffeeMatchService:
             
             logger.info(f"[>] Kahve eşleşmesi başlatılıyor | {user_name1} ({user_id1}) <-> {user_name2} ({user_id2})")
             
-            # 1. Grup konuşması aç
-            channel = self.conv.open_conversation(users=[user_id1, user_id2])
-            channel_id = channel["id"]
-            logger.info(f"[+] Özel grup oluşturuldu | Kanal: {channel_id} | {user_name1} & {user_name2}")
-
-            # 2. Veritabanına kaydet
+            # 1. Veritabanına önce kaydet (match_id almak için)
             match_id = self.match_repo.create({
-                "channel_id": channel_id,
                 "user1_id": user_id1,
                 "user2_id": user_id2,
                 "status": "active"
             })
+            
+            # 2. Private kanal oluştur (yardım servisi ile aynı mantık)
+            import uuid
+            channel_suffix = str(uuid.uuid4())[:8]
+            channel_name = f"kahve-{channel_suffix}"
+            try:
+                coffee_channel = self.conv.create_channel(
+                    name=channel_name,
+                    is_private=True  # Private channel
+                )
+                coffee_channel_id = coffee_channel["id"]
+                logger.info(f"[+] Kahve kanalı oluşturuldu: #{channel_name} (ID: {coffee_channel_id})")
+                
+                # Her iki kullanıcıyı kanala davet et
+                try:
+                    self.conv.invite_users(coffee_channel_id, [user_id1, user_id2])
+                    logger.info(f"[+] Kullanıcılar kanala davet edildi: {user_id1}, {user_id2}")
+                except Exception as e:
+                    logger.warning(f"[!] Kullanıcılar davet edilemedi: {e}")
+                
+                # Veritabanına coffee_channel_id ekle
+                self.match_repo.update(match_id, {"coffee_channel_id": coffee_channel_id})
+                
+            except Exception as e:
+                logger.error(f"[X] Kahve kanalı oluşturulamadı: {e}")
+                raise CemilBotError(f"Kahve kanalı oluşturulamadı: {e}")
 
             # 3. Ice Breaker mesajı oluştur
             system_prompt = (
@@ -217,40 +237,67 @@ class CoffeeMatchService:
             
             ice_breaker = await self.groq.quick_ask(system_prompt, user_prompt)
 
-            # 4. Mesajı kanala gönder
-            self.chat.post_message(
-                channel=channel_id,
-                text=ice_breaker,
-                blocks=[
+            # 3. Kanal açılış mesajı gönder
+            welcome_blocks = [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "☕ Kahve Eşleşmesi",
+                        "emoji": True
+                    }
+                },
                     {
                         "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"[c] *Kahve Eşleşmesi:* \n\n{ice_breaker}"}
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"Merhaba <@{user_id1}> ve <@{user_id2}>! ☕\n\n"
+                            f"{ice_breaker}\n\n"
+                            f"Bu özel kanal 5 dakika sonra otomatik olarak kapatılacak. "
+                            f"İyi sohbetler! 💬"
+                        )
+                    }
                     },
                     {
                         "type": "context",
-                        "elements": [{"type": "mrkdwn", "text": "[i] Bu kanal 5 dakika sonra otomatik olarak kapatılacaktır."}]
-                    }
-                ]
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"⏰ Bu kanal 5 dakika sonra otomatik olarak kapatılacak"
+                        }
+                    ]
+                }
+            ]
+            
+            self.chat.post_message(
+                channel=coffee_channel_id,
+                text="☕ Kahve Eşleşmesi",
+                blocks=welcome_blocks
             )
 
-            # 5. 5 dakika sonra kapatma görevi planla
+            # 4. 5 dakika sonra kapatma görevi planla
             self.cron.add_once_job(
                 func=self.close_match,
                 delay_minutes=5,
-                job_id=f"close_match_{channel_id}",
-                args=[channel_id, match_id]
+                job_id=f"close_coffee_channel_{match_id}",
+                args=[coffee_channel_id, match_id]
             )
-            logger.info(f"[i] 5 dakika sonra kapatma görevi planlandı | Kanal: {channel_id} | {user_name1} & {user_name2}")
+            logger.info(f"[i] 5 dakika sonra kapatma görevi planlandı | Kanal: {coffee_channel_id} | {user_name1} & {user_name2}")
 
         except Exception as e:
             logger.error(f"[X] CoffeeMatchService.start_match hatası: {e}")
             raise CemilBotError(f"Eşleşme başlatılamadı: {e}")
 
-    async def close_match(self, channel_id: str, match_id: str):
-        """Sohbet özetini çıkarır, admini bilgilendirir ve grubu kapatır."""
+    async def close_match(self, coffee_channel_id: str, match_id: str):
+        """Sohbet özetini çıkarır, admini bilgilendirir ve private kanalı kapatır (yardım servisi ile aynı mantık)."""
         try:
             # Kullanıcı isimlerini al
             match_data = self.match_repo.get(match_id)
+            if not match_data:
+                logger.error(f"[X] Match bulunamadı: {match_id}")
+                return
+            
             try:
                 user_info1 = self.chat.client.users_info(user=match_data['user1_id'])
                 user_name1 = user_info1.get("user", {}).get("real_name", match_data['user1_id']) if user_info1.get("ok") else match_data['user1_id']
@@ -262,10 +309,10 @@ class CoffeeMatchService:
             except:
                 user_name2 = match_data['user2_id']
             
-            logger.info(f"[>] Eşleşme grubu kapatılıyor | Kanal: {channel_id} | {user_name1} ({match_data['user1_id']}) & {user_name2} ({match_data['user2_id']})")
+            logger.info(f"[>] Kahve kanalı kapatılıyor | Kanal: {coffee_channel_id} | {user_name1} ({match_data['user1_id']}) & {user_name2} ({match_data['user2_id']})")
             
             # 1. Sohbet geçmişini al
-            messages = self.conv.get_history(channel_id=channel_id, limit=50)
+            messages = self.conv.get_history(channel_id=coffee_channel_id, limit=50)
             
             # 2. Mesajları temizle
             user_messages = []
@@ -290,116 +337,37 @@ class CoffeeMatchService:
 
             # 5. Admin Kanalını Bilgilendir
             if self.admin_channel:
-                match_data = self.match_repo.get(match_id)
                 admin_msg = (
-                    f"[!] *EŞLEŞME ÖZETİ RAPORU*\n"
-                    f"== Kanal: {channel_id}\n"
+                    f"[!] *KAHVE EŞLEŞMESİ ÖZETİ RAPORU*\n"
+                    f"== Kanal: {coffee_channel_id}\n"
                     f"== Katılımcılar: <@{match_data['user1_id']}> & <@{match_data['user2_id']}>\n"
                     f"== Özet: {summary}"
                 )
                 self.chat.post_message(channel=self.admin_channel, text=admin_msg)
 
-            # 6. Kapanış mesajı gönder (grup DM'de)
+            # 6. Kapanış mesajı gönder (private channel'da)
             self.chat.post_message(
-                channel=channel_id,
-                text=(
-                    "[>] *Süremiz doldu. Bu sohbet sona erdi. Görüşmek üzere!*\n\n"
-                    "ℹ️ *Önemli:* Bu grup DM'den çıkmak için:\n"
-                    "1. Sol menüde bu konuşmayı bulun\n"
-                    "2. Sağ tıklayın ve 'Leave conversation' seçeneğini seçin\n"
-                    "3. Veya mobilde konuşma ayarlarından 'Leave' butonuna tıklayın"
-                )
+                channel=coffee_channel_id,
+                text="⏰ Bu kahve kanalı 5 dakika sonra otomatik olarak kapatıldı.",
+                blocks=[{
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "⏰ *Kanal Kapatıldı*\n\nBu kahve kanalı 5 dakika sonra otomatik olarak kapatıldı. "
+                                "Yeni bir eşleşme için `/kahve` komutunu kullanabilirsiniz! ☕"
+                    }
+                }]
             )
             
-            # 7. Her kullanıcıya ayrı DM gönder (grup DM'den çıkmaları için)
-            try:
-                # Kullanıcı 1'e DM gönder
-                dm_channel1 = self.conv.open_conversation(users=[match_data['user1_id']])
-                self.chat.post_message(
-                    channel=dm_channel1["id"],
-                    text=(
-                        f"☕ *Kahve Eşleşmesi Sonlandı*\n\n"
-                        f"<@{match_data['user1_id']}> ve <@{match_data['user2_id']}> arasındaki eşleşme süresi doldu.\n\n"
-                        f"💡 *Grup DM'den çıkmak için:*\n"
-                        f"• Sol menüde grup DM'i bulun\n"
-                        f"• Sağ tıklayın → 'Leave conversation'\n"
-                        f"• Veya mobilde konuşma ayarlarından 'Leave' butonuna tıklayın\n\n"
-                        f"Yeni bir eşleşme için `/kahve` komutunu kullanabilirsiniz! ☕"
-                    )
-                )
-                logger.debug(f"[i] Kapanış DM'i gönderildi | Kullanıcı: {user_name1} ({match_data['user1_id']})")
-            except Exception as e:
-                logger.warning(f"[!] Kullanıcı 1'e DM gönderilemedi: {e}")
+            # 7. Kanalı arşivle (yardım servisi ile aynı mantık)
+            success = self.conv.archive_channel(coffee_channel_id)
             
-            try:
-                # Kullanıcı 2'ye DM gönder
-                dm_channel2 = self.conv.open_conversation(users=[match_data['user2_id']])
-                self.chat.post_message(
-                    channel=dm_channel2["id"],
-                    text=(
-                        f"☕ *Kahve Eşleşmesi Sonlandı*\n\n"
-                        f"<@{match_data['user1_id']}> ve <@{match_data['user2_id']}> arasındaki eşleşme süresi doldu.\n\n"
-                        f"💡 *Grup DM'den çıkmak için:*\n"
-                        f"• Sol menüde grup DM'i bulun\n"
-                        f"• Sağ tıklayın → 'Leave conversation'\n"
-                        f"• Veya mobilde konuşma ayarlarından 'Leave' butonuna tıklayın\n\n"
-                        f"Yeni bir eşleşme için `/kahve` komutunu kullanabilirsiniz! ☕"
-                    )
-                )
-                logger.debug(f"[i] Kapanış DM'i gönderildi | Kullanıcı: {user_name2} ({match_data['user2_id']})")
-            except Exception as e:
-                logger.warning(f"[!] Kullanıcı 2'ye DM gönderilemedi: {e}")
-            
-            # Kapanış mesajının gönderilmesi için kısa bir bekleme
-            await asyncio.sleep(2)
-            
-            # Önce conversations.close dene (1-on-1 DM için)
-            close_success = self.conv.close_conversation(channel_id=channel_id)
-            
-            # Eğer başarısız olursa (grup DM ise), kullanıcıları çıkarmayı dene
-            if not close_success:
-                logger.info(f"[i] Grup DM tespit edildi | Kanal: {channel_id}")
-                
-                # Önce kullanıcıları gruptan çıkarmayı dene (conversations.kick)
-                # Not: Grup DM'lerde bu genellikle çalışmaz (Slack API kısıtlaması), ama deneyelim
-                user1_kicked = False
-                user2_kicked = False
-                
-                try:
-                    if self.conv.kick_user(channel_id, match_data['user1_id']):
-                        user1_kicked = True
-                        logger.info(f"[+] Kullanıcı 1 gruptan çıkarıldı | {user_name1} ({match_data['user1_id']})")
-                except Exception as e:
-                    logger.warning(f"[!] Kullanıcı 1 çıkarılamadı (Slack API kısıtlaması - grup DM'lerde genellikle çalışmaz): {e}")
-                
-                try:
-                    if self.conv.kick_user(channel_id, match_data['user2_id']):
-                        user2_kicked = True
-                        logger.info(f"[+] Kullanıcı 2 gruptan çıkarıldı | {user_name2} ({match_data['user2_id']})")
-                except Exception as e:
-                    logger.warning(f"[!] Kullanıcı 2 çıkarılamadı (Slack API kısıtlaması - grup DM'lerde genellikle çalışmaz): {e}")
-                
-                # Eğer kullanıcılar çıkarılamadıysa, bot'u gruptan çıkar
-                if not user1_kicked or not user2_kicked:
-                    logger.info(f"[i] Kullanıcılar otomatik çıkarılamadı, bot gruptan çıkıyor | Kanal: {channel_id}")
-                    leave_success = self.conv.leave_channel(channel_id)
-                    if leave_success:
-                        logger.info(f"[+] Bot başarıyla kanaldan çıkarıldı | Kanal: {channel_id} | Not: Kullanıcılar manuel olarak çıkmalı")
-                    else:
-                        logger.warning(f"[!] Bot kanaldan çıkarılamadı (Slack API kısıtlaması) | Kanal: {channel_id}")
-                        logger.info(f"[i] Kullanıcılar manuel olarak kanaldan çıkabilir")
-                else:
-                    # Kullanıcılar çıkarıldı, bot da çıksın
-                    logger.info(f"[+] Tüm kullanıcılar gruptan çıkarıldı, bot da çıkıyor | Kanal: {channel_id}")
-                    leave_success = self.conv.leave_channel(channel_id)
-                    if leave_success:
-                        logger.info(f"[+] Bot başarıyla kanaldan çıkarıldı | Kanal: {channel_id}")
-                    else:
-                        logger.warning(f"[!] Bot kanaldan çıkarılamadı | Kanal: {channel_id}")
+            if success:
+                logger.info(f"[+] Kahve kanalı başarıyla kapatıldı | Kanal: {coffee_channel_id}")
             else:
-                logger.info(f"[+] 1-on-1 DM başarıyla kapatıldı | Kanal: {channel_id}")
+                logger.warning(f"[!] Kahve kanalı kapatılamadı | Kanal: {coffee_channel_id}")
             
-            logger.info(f"[+] Eşleşme raporlandı | Kanal: {channel_id} | Özet: {summary[:50]}...")
+            logger.info(f"[+] Eşleşme raporlandı | Kanal: {coffee_channel_id} | Özet: {summary[:50]}...")
 
         except Exception as e:
             logger.error(f"[X] CoffeeMatchService.close_match hatası: {e}")
