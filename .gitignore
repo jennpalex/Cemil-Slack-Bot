@@ -46,14 +46,11 @@ logs/
 *.log
 
 # Data
-data/*.db
-data/*.index
-data/*.pkl
-data/initial_users.csv
+data/
+!data/.gitkeep
 
-# Vector Store
-vector_store.index
-vector_store.pkl
+# Knowledge Base
+knowledge_base/
 
 # Test
 .pytest_cache/
