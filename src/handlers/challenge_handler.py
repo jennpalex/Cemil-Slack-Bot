@@ -170,3 +170,126 @@ def setup_challenge_handlers(
             user=user_id,
             text="📊 Challenge durumu özelliği yakında eklenecek."
         )
+
+    @app.action("challenge_join_button")
+    def handle_challenge_join_button(ack, body):
+        """Challenge'a katıl butonuna tıklama."""
+        ack()
+        user_id = body["user"]["id"]
+        channel_id = body["channel"]["id"]
+        challenge_id = body["actions"][0]["value"]
+        
+        # Eğer zaten katıldıysa
+        if challenge_id == "joined":
+            chat_manager.post_ephemeral(
+                channel=channel_id,
+                user=user_id,
+                text="✅ Zaten bu challenge'a katıldınız."
+            )
+            return
+        
+        # Kullanıcı bilgisini al
+        try:
+            user_data = user_repo.get_by_slack_id(user_id)
+            user_name = user_data.get('full_name', user_id) if user_data else user_id
+        except Exception:
+            user_name = user_id
+        
+        logger.info(f"[>] Challenge join butonu tıklandı | Kullanıcı: {user_name} ({user_id}) | Challenge: {challenge_id}")
+        
+        async def process_join():
+            result = await challenge_service.join_challenge(
+                challenge_id=challenge_id,
+                user_id=user_id
+            )
+            
+            if result["success"]:
+                # Başarılı mesajı gönder
+                chat_manager.post_ephemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=result["message"]
+                )
+                
+                # Mesajı güncelle - butonu disable et ve katılımcı sayısını güncelle
+                try:
+                    import copy
+                    message_ts = body["message"]["ts"]
+                    blocks = copy.deepcopy(body["message"]["blocks"])
+                    
+                    # Challenge bilgisini al (servis üzerinden)
+                    from src.repositories import ChallengeHubRepository, ChallengeParticipantRepository
+                    from src.clients import DatabaseClient
+                    from src.core.settings import get_settings
+                    
+                    settings = get_settings()
+                    db_client = DatabaseClient(db_path=settings.database_path)
+                    hub_repo = ChallengeHubRepository(db_client)
+                    participant_repo = ChallengeParticipantRepository(db_client)
+                    
+                    challenge = hub_repo.get(challenge_id)
+                    if challenge:
+                        participants = participant_repo.get_team_members(challenge_id)
+                        participant_count = len(participants)
+                        team_size = challenge["team_size"]
+                        
+                        # Butonu disable et veya kaldır
+                        updated_blocks = []
+                        for block in blocks:
+                            if block.get("type") == "actions":
+                                # Butonları güncelle
+                                updated_elements = []
+                                for element in block.get("elements", []):
+                                    if element.get("action_id") == "challenge_join_button":
+                                        if participant_count >= team_size:
+                                            # Takım doldu - butonu kaldır
+                                            continue
+                                        else:
+                                            # Butonu disable et
+                                            element["text"]["text"] = "✅ Katıldınız"
+                                            element["value"] = "joined"
+                                            element["style"] = None
+                                            element.pop("action_id", None)
+                                            updated_elements.append(element)
+                                    else:
+                                        updated_elements.append(element)
+                                
+                                if updated_elements:
+                                    block["elements"] = updated_elements
+                                    updated_blocks.append(block)
+                                # Eğer tüm butonlar kaldırıldıysa, actions block'unu ekleme
+                            else:
+                                # Context'i güncelle
+                                if block.get("type") == "context" and challenge:
+                                    block["elements"][0]["text"] = f"Challenge ID: `{challenge_id[:8]}...` | Durum: {participant_count}/{team_size} kişi"
+                                updated_blocks.append(block)
+                        
+                        # Mesajı güncelle
+                        chat_manager.update_message(
+                            channel=channel_id,
+                            ts=message_ts,
+                            text="🔥 Yeni Challenge Açıldı!",
+                            blocks=updated_blocks
+                        )
+                except Exception as e:
+                    logger.debug(f"[i] Mesaj güncelleme hatası (normal): {e}")
+                
+            else:
+                error_msg = result["message"]
+                if result.get("error_code") == "ALREADY_PARTICIPATING":
+                    error_msg = (
+                        "❌ *Zaten Bu Challenge'a Katıldınız*\n\n"
+                        "Aynı challenge'a iki kez katılamazsınız."
+                    )
+                elif result.get("error_code") == "TEAM_FULL":
+                    error_msg = "❌ Bu challenge'ın takımı dolmuş."
+                elif result.get("error_code") == "USER_HAS_ACTIVE_CHALLENGE":
+                    error_msg = "❌ Zaten aktif bir challenge'ınız var. Önce onu tamamlayın."
+                
+                chat_manager.post_ephemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=error_msg
+                )
+        
+        asyncio.run(process_join())

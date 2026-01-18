@@ -101,19 +101,62 @@ class ChallengeHubService:
                 "role": "leader"
             })
 
-            # 4. #challenge-hub kanalına mesaj gönder
+            # 4. #challenge-hub kanalına mesaj gönder (buton ile)
             hub_channel = self._get_hub_channel()
             if hub_channel:
-                message = (
-                    f"🔥 *Yeni Challenge Açıldı!*\n\n"
-                    f"Tema: {self._get_theme_icon(theme)} {theme}\n"
-                    f"Takım: {team_size} kişi\n"
-                    f"Süre: {deadline_hours} saat\n"
-                    f"Zorluk: {difficulty.capitalize()}\n\n"
-                    f"Katılmak isteyenler:\n"
-                    f"👉 `/challenge join`"
+                blocks = [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "🔥 Yeni Challenge Açıldı!",
+                            "emoji": True
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": (
+                                f"*Tema:* {self._get_theme_icon(theme)} {theme}\n"
+                                f"*Takım:* {team_size} kişi\n"
+                                f"*Süre:* {deadline_hours} saat\n"
+                                f"*Zorluk:* {difficulty.capitalize()}\n\n"
+                                f"Katılmak isteyenler butona tıklayın:"
+                            )
+                        }
+                    },
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "🎯 Challenge'a Katıl",
+                                    "emoji": True
+                                },
+                                "style": "primary",
+                                "action_id": "challenge_join_button",
+                                "value": challenge_id
+                            }
+                        ]
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f"Challenge ID: `{challenge_id[:8]}...` | Durum: {1}/{team_size} kişi"
+                            }
+                        ]
+                    }
+                ]
+                self.chat.post_message(
+                    channel=hub_channel,
+                    text="🔥 Yeni Challenge Açıldı!",
+                    blocks=blocks
                 )
-                self.chat.post_message(channel=hub_channel, text=message)
 
             logger.info(f"[+] Challenge başlatıldı | ID: {challenge_id} | Tema: {theme} | Takım: {team_size}")
 
