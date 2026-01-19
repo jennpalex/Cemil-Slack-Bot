@@ -395,6 +395,79 @@ class ChallengeEvaluationService:
 
             logger.info(f"[+] Oy kaydedildi: {user_id} | Vote: {vote} | Evaluation: {evaluation_id}")
 
+            # 3 kişi oy verdiyse kontrol et
+            total_votes = votes["true"] + votes["false"]
+            if total_votes >= 3:
+                logger.info(f"[i] 3 değerlendirici oy verdi | Evaluation: {evaluation_id}")
+                
+                # GitHub repo var mı ve public mi kontrol et
+                github_url = evaluation.get("github_repo_url")
+                github_public = evaluation.get("github_repo_public", 0)
+                
+                eval_channel_id = evaluation.get("evaluation_channel_id")
+                
+                if github_url and github_public == 1:
+                    # Repo var ve public → Hemen sonlandır
+                    logger.info(f"[+] Tüm oylar alındı ve repo public → Değerlendirme sonlandırılıyor | Evaluation: {evaluation_id}")
+                    
+                    # Kanala bilgi mesajı gönder
+                    if eval_channel_id:
+                        try:
+                            self.chat.post_message(
+                                channel=eval_channel_id,
+                                text="✅ Tüm değerlendiriciler oy verdi ve GitHub repo public! Değerlendirme sonuçlanıyor...",
+                                blocks=[
+                                    {
+                                        "type": "section",
+                                        "text": {
+                                            "type": "mrkdwn",
+                                            "text": "✅ *Tüm değerlendiriciler oy verdi ve GitHub repo public!*\n\nDeğerlendirme sonuçlanıyor..."
+                                        }
+                                    }
+                                ]
+                            )
+                        except Exception as e:
+                            logger.warning(f"[!] Sonlandırma mesajı gönderilemedi: {e}")
+                    
+                    # Hemen finalize et
+                    await self.finalize_evaluation(evaluation_id)
+                else:
+                    # Repo yok veya private → Bilgilendirme mesajı gönder
+                    if eval_channel_id:
+                        try:
+                            if not github_url:
+                                message = (
+                                    "✅ *Tüm değerlendiriciler oy verdi!*\n\n"
+                                    "🔗 Şimdi GitHub repo linki eklemeniz gerekiyor:\n"
+                                    "`/challenge set github <link>`\n\n"
+                                    "Repo eklendikten ve public olduğu doğrulandıktan sonra değerlendirme sonuçlanacak."
+                                )
+                            else:
+                                message = (
+                                    "✅ *Tüm değerlendiriciler oy verdi!*\n\n"
+                                    "⚠️ GitHub repo linki eklendi ancak repo *private* görünüyor.\n"
+                                    "Lütfen repo'yu public yapın veya doğru linki ekleyin:\n"
+                                    "`/challenge set github <link>`\n\n"
+                                    "Repo public olduktan sonra değerlendirme sonuçlanacak."
+                                )
+                            
+                            self.chat.post_message(
+                                channel=eval_channel_id,
+                                text="✅ Tüm değerlendiriciler oy verdi!",
+                                blocks=[
+                                    {
+                                        "type": "section",
+                                        "text": {
+                                            "type": "mrkdwn",
+                                            "text": message
+                                        }
+                                    }
+                                ]
+                            )
+                            logger.info(f"[i] Repo bekleme mesajı gönderildi | Evaluation: {evaluation_id}")
+                        except Exception as e:
+                            logger.warning(f"[!] Repo bekleme mesajı gönderilemedi: {e}")
+
             return {
                 "success": True,
                 "message": f"✅ Oyunuz kaydedildi: *{vote}*"
@@ -437,11 +510,46 @@ class ChallengeEvaluationService:
                 "github_repo_public": 1 if is_public else 0
             })
 
+            # Eğer repo public ve 3 kişi oy verdiyse hemen sonlandır
             if is_public:
-                return {
-                    "success": True,
-                    "message": f"✅ GitHub repo linki kaydedildi ve public olarak doğrulandı: {github_url}"
-                }
+                votes = self.evaluator_repo.get_votes(evaluation_id)
+                total_votes = votes["true"] + votes["false"]
+                
+                if total_votes >= 3:
+                    logger.info(f"[+] GitHub repo public ve 3 oy var → Değerlendirme sonlandırılıyor | Evaluation: {evaluation_id}")
+                    
+                    # Kanala bilgi mesajı gönder
+                    eval_channel_id = evaluation.get("evaluation_channel_id")
+                    if eval_channel_id:
+                        try:
+                            self.chat.post_message(
+                                channel=eval_channel_id,
+                                text="✅ GitHub repo public ve tüm oylar alındı! Değerlendirme sonuçlanıyor...",
+                                blocks=[
+                                    {
+                                        "type": "section",
+                                        "text": {
+                                            "type": "mrkdwn",
+                                            "text": "✅ *GitHub repo public doğrulandı ve tüm oylar alındı!*\n\nDeğerlendirme sonuçlanıyor..."
+                                        }
+                                    }
+                                ]
+                            )
+                        except Exception as e:
+                            logger.warning(f"[!] Sonlandırma mesajı gönderilemedi: {e}")
+                    
+                    # Hemen finalize et
+                    await self.finalize_evaluation(evaluation_id)
+                    
+                    return {
+                        "success": True,
+                        "message": f"✅ GitHub repo linki kaydedildi, public doğrulandı ve değerlendirme tamamlandı: {github_url}"
+                    }
+                else:
+                    return {
+                        "success": True,
+                        "message": f"✅ GitHub repo linki kaydedildi ve public olarak doğrulandı: {github_url}\n\n💡 Tüm değerlendiriciler oy verdiğinde değerlendirme tamamlanacak."
+                    }
             else:
                 return {
                     "success": True,
