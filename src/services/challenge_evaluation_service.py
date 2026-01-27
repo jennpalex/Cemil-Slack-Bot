@@ -477,6 +477,30 @@ class ChallengeEvaluationService:
                         "action": "full"
                     }
 
+                # Kullanıcıyı users tablosuna ekle (foreign key için gerekli)
+                try:
+                    from src.clients import DatabaseClient
+                    from src.core.settings import get_settings
+                    settings = get_settings()
+                    db_client = DatabaseClient(db_path=settings.database_path)
+                    
+                    with db_client.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT id FROM users WHERE slack_id = ?", (user_id,))
+                        user_exists = cursor.fetchone()
+                        
+                        if not user_exists:
+                            # Kullanıcı yoksa otomatik ekle
+                            user_uuid = str(uuid.uuid4())
+                            cursor.execute("""
+                                INSERT INTO users (id, slack_id, full_name, created_at, updated_at)
+                                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            """, (user_uuid, user_id, f"User {user_id}"))
+                            conn.commit()
+                            logger.info(f"[+] Jüri için kullanıcı otomatik eklendi: {user_id}")
+                except Exception as e:
+                    logger.warning(f"[!] Kullanıcı kontrolü/ekleme hatası (jüri): {e}")
+
                 # Havuza ekle
                 juror_id = str(uuid.uuid4())
                 self.evaluator_repo.create({

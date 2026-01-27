@@ -47,10 +47,52 @@ class ChallengeManager:
         self.slack_client = WebClient(token=self.settings.slack_bot_token)
         self.user_client = WebClient(token=self.settings.slack_user_token) if self.settings.slack_user_token else None
 
+        # Şema uyum kontrolü (kritik kolonlar eksikse otomatik ekle)
+        self._ensure_schema()
+
     def get_connection(self):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _ensure_schema(self):
+        """
+        Veritabanı şemasını kontrol eder ve yeni eklenen kritik kolonlar yoksa ekler.
+        Böylece kod ile DB şeması arasındaki uyumsuzluklardan kaynaklı
+        'no such column' hatalarının önüne geçilir.
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            # challenge_hubs tablosundaki kolonları oku
+            cursor.execute("PRAGMA table_info(challenge_hubs)")
+            cols = {row["name"] for row in cursor.fetchall()}
+
+            # Beklenen yeni kolonlar
+            alter_statements = []
+            if "project_name" not in cols:
+                alter_statements.append("ALTER TABLE challenge_hubs ADD COLUMN project_name TEXT;")
+            if "project_description" not in cols:
+                alter_statements.append("ALTER TABLE challenge_hubs ADD COLUMN project_description TEXT;")
+            if "summary_message_ts" not in cols:
+                alter_statements.append("ALTER TABLE challenge_hubs ADD COLUMN summary_message_ts TEXT;")
+            if "summary_message_channel_id" not in cols:
+                alter_statements.append("ALTER TABLE challenge_hubs ADD COLUMN summary_message_channel_id TEXT;")
+
+            for stmt in alter_statements:
+                cursor.execute(stmt)
+
+            if alter_statements:
+                conn.commit()
+                console.print("[green]✅ challenge_hubs şeması otomatik olarak güncellendi.[/green]")
+        except Exception as e:
+            console.print(f"[bold red]⚠️ Şema kontrolü sırasında hata: {e}[/bold red]")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def list_challenges(self, status: Optional[str] = None, limit: int = 20):
         """List challenges with optional status filter."""

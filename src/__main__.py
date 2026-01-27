@@ -18,6 +18,47 @@ from src.core.logger import logger
 from src.core.settings import get_settings
 from dotenv import load_dotenv
 
+def ensure_database_schema():
+    """
+    Veritabanı şemasının güncel olduğundan emin olur.
+    Eksik kolonları otomatik ekler.
+    """
+    try:
+        logger.info("[>] Veritabanı şema kontrolü yapılıyor...")
+        conn = db_client.get_connection()
+        cursor = conn.cursor()
+        
+        # challenge_hubs tablosundaki kolonları kontrol et
+        cursor.execute("PRAGMA table_info(challenge_hubs)")
+        cols = {row["name"] for row in cursor.fetchall()}
+        
+        # Gerekli yeni kolonlar
+        migrations = []
+        if "project_name" not in cols:
+            migrations.append("ALTER TABLE challenge_hubs ADD COLUMN project_name TEXT;")
+        if "project_description" not in cols:
+            migrations.append("ALTER TABLE challenge_hubs ADD COLUMN project_description TEXT;")
+        if "summary_message_ts" not in cols:
+            migrations.append("ALTER TABLE challenge_hubs ADD COLUMN summary_message_ts TEXT;")
+        if "summary_message_channel_id" not in cols:
+            migrations.append("ALTER TABLE challenge_hubs ADD COLUMN summary_message_channel_id TEXT;")
+        if "ended_at" not in cols:
+            migrations.append("ALTER TABLE challenge_hubs ADD COLUMN ended_at TIMESTAMP;")
+        
+        for migration in migrations:
+            cursor.execute(migration)
+            logger.info(f"[+] Şema güncellendi: {migration.split('ADD COLUMN')[1].strip()}")
+        
+        if migrations:
+            conn.commit()
+            logger.info("[+] Veritabanı şeması güncellendi.")
+        else:
+            logger.info("[+] Veritabanı şeması güncel.")
+        
+        conn.close()
+    except Exception as e:
+        logger.error(f"[X] Şema kontrolü sırasında hata: {e}", exc_info=True)
+
 # Non-interactive mod (CI / prod deploy) için flag
 NON_INTERACTIVE = os.environ.get("CEMIL_NON_INTERACTIVE") == "1"
 
@@ -111,6 +152,9 @@ def main():
     # 1. Veritabanı
     logger.info("[>] Veritabanı kontrol ediliyor...")
     db_client.init_db()
+    
+    # Şema güncellemelerini uygula (yeni kolonlar varsa ekle)
+    ensure_database_schema()
     
     # Challenge tablolarını temizle (startup'ta) - Settings'e bağlı
     if settings.db_clean_on_startup:

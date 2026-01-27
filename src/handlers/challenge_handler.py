@@ -4,7 +4,9 @@ Challenge Hub komut handler'ları.
 
 import asyncio
 import re
+from datetime import datetime
 from slack_bolt import App
+from pydantic import ValidationError
 from src.core.logger import logger
 from src.core.settings import get_settings
 from src.core.rate_limiter import get_rate_limiter
@@ -133,10 +135,24 @@ def setup_challenge_handlers(
         try:
             request = ChallengeStartRequest.parse_from_text(text)
         except ValueError as ve:
+            # Metin hiç yok veya sayı değil gibi basit format hataları
             chat_manager.post_ephemeral(
                 channel=channel_id,
                 user=user_id,
-                text=f"❌ Format hatası: {str(ve)}\n\nÖrnek: `/challenge start 4`"
+                text=f"❌ {str(ve)}\n\nÖrnek: `/challenge start 4`"
+            )
+            return
+        except ValidationError:
+            # Pydantic tarafındaki 2-6 arası kısıtı bozulduğunda
+            friendly_msg = (
+                "❌ Takım büyüklüğü geçersiz.\n\n"
+                "Takım en az *2*, en fazla *6* kişiden oluşabilir.\n\n"
+                "Örnek: `/challenge start 4`"
+            )
+            chat_manager.post_ephemeral(
+                channel=channel_id,
+                user=user_id,
+                text=friendly_msg
             )
             return
 
@@ -1064,3 +1080,106 @@ def setup_challenge_handlers(
                 )
 
         asyncio.run(process_toggle())
+
+    @app.action("challenge_cancel_button")
+    def handle_challenge_cancel_button(ack, body):
+        """Challenge iptal butonu - Sadece creator iptal edebilir."""
+        ack()
+        
+        user_id = body["user"]["id"]
+        channel_id = body["channel"]["id"]
+        
+        actions = body.get("actions", [])
+        if not actions:
+            return
+        
+        challenge_id = actions[0].get("value")
+        
+        logger.info(f"[>] Challenge iptal butonu tıklandı | Kullanıcı: {user_id} | Challenge: {challenge_id}")
+        
+        async def process_cancel():
+            try:
+                # Challenge'ı al
+                from src.repositories import ChallengeHubRepository
+                from src.clients import DatabaseClient
+                
+                settings = get_settings()
+                db_client = DatabaseClient(db_path=settings.database_path)
+                hub_repo = ChallengeHubRepository(db_client)
+                
+                challenge = hub_repo.get(challenge_id)
+                if not challenge:
+                    chat_manager.post_ephemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text="❌ Challenge bulunamadı."
+                    )
+                    return
+                
+                # Sadece creator iptal edebilir
+                if user_id != challenge.get("creator_id"):
+                    chat_manager.post_ephemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text="❌ Sadece challenge sahibi iptal edebilir."
+                    )
+                    return
+                
+                # Sadece recruiting durumunda iptal edilebilir
+                if challenge.get("status") != "recruiting":
+                    chat_manager.post_ephemeral(
+                        channel=channel_id,
+                        user=user_id,
+                        text="❌ Sadece katılım aşamasındaki challenge'lar iptal edilebilir."
+                    )
+                    return
+                
+                # Challenge'ı iptal et
+                hub_repo.update(challenge_id, {
+                    "status": "cancelled",
+                    "ended_at": datetime.now().isoformat()
+                })
+                
+                logger.info(f"[-] Challenge iptal edildi (creator tarafından) | ID: {challenge_id} | Creator: {user_id}")
+                
+                # Mesajı güncelle - butonları kaldır
+                try:
+                    message_ts = body["message"]["ts"]
+                    import copy
+                    blocks = copy.deepcopy(body["message"].get("blocks", []))
+                    
+                    # Actions bloğunu kaldır ve iptal mesajı ekle
+                    new_blocks = [b for b in blocks if b.get("type") != "actions"]
+                    new_blocks.append({
+                        "type": "context",
+                        "elements": [{
+                            "type": "mrkdwn",
+                            "text": f"❌ *Challenge iptal edildi* - <@{user_id}> tarafından"
+                        }]
+                    })
+                    
+                    chat_manager.update_message(
+                        channel=channel_id,
+                        ts=message_ts,
+                        text="❌ Challenge iptal edildi",
+                        blocks=new_blocks
+                    )
+                except Exception as e:
+                    logger.warning(f"[!] Mesaj güncelleme hatası (iptal): {e}")
+                
+                # Kullanıcıya bilgi ver
+                chat_manager.post_ephemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text="✅ Challenge iptal edildi."
+                )
+                
+            except Exception as e:
+                logger.error(f"[X] Challenge iptal hatası: {e}", exc_info=True)
+                chat_manager.post_ephemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text="❌ İptal işlemi sırasında hata oluştu."
+                )
+        
+        asyncio.run(process_cancel())

@@ -172,13 +172,29 @@ class ChallengeHubService:
             if target_channel:
                 blocks = [
                     {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "🚀 Yeni bir CHALLENGE başlıyor!",
+                            "emoji": True
+                        }
+                    },
+                    {
                         "type": "section",
                         "text": {
                             "type": "mrkdwn",
                             "text": (
-                                f"👤 <@{creator_id}> *{team_size + 1} kişilik challenge başlattı*\n\n"
-                                "👇 *Katılmak için butona tıklayın:*"
+                                f"👤 <@{creator_id}> yeni bir challenge başlattı!\n\n"
+                                "Bakalım bu sefer hangi proje hayata geçecek? ✨\n\n"
+                                f"*Takım Büyüklüğü:* {team_size + 1} kişi (sen dahil)\n"
                             )
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "Katılmak istersen aşağıdaki butona tıklaman yeterli:"
                         }
                     },
                     {
@@ -194,6 +210,17 @@ class ChallengeHubService:
                                 "style": "primary",
                                 "action_id": "challenge_join_button",
                                 "value": challenge_id
+                            },
+                            {
+                                "type": "button",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "🗑️ İptal Et",
+                                    "emoji": True
+                                },
+                                "style": "danger",
+                                "action_id": "challenge_cancel_button",
+                                "value": challenge_id
                             }
                         ]
                     },
@@ -202,14 +229,17 @@ class ChallengeHubService:
                         "elements": [
                             {
                                 "type": "mrkdwn",
-                                "text": f"📊 *0/{team_size}* katılımcı"
+                                "text": (
+                                    f"📊 *0/{team_size}* katılımcı | "
+                                    "Takım dolunca proje ve görevler otomatik seçilecek."
+                                )
                             }
                         ]
                     }
                 ]
                 self.chat.post_message(
                     channel=target_channel,
-                    text=f"👤 {creator_id} {team_size + 1} kişilik challenge başlattı",
+                    text="🚀 Yeni bir CHALLENGE başlıyor!",
                     blocks=blocks
                 )
                 
@@ -988,19 +1018,64 @@ class ChallengeHubService:
             for challenge in recruiting_challenges:
                 created_at = challenge.get("created_at")
                 if created_at and created_at < timeout_date:
-                    self.hub_repo.update(challenge["id"], {
+                    challenge_id = challenge["id"]
+                    team_size = challenge.get("team_size", 0)
+
+                    # O ana kadar kaç kişi katılmış?
+                    participants = self.participant_repo.get_team_members(challenge_id)
+                    participant_count = len(participants)
+
+                    # Challenge'ı failed olarak işaretle
+                    self.hub_repo.update(challenge_id, {
                         "status": "failed",
                         "ended_at": datetime.now().isoformat()
                     })
                     cancelled_count += 1
-                    logger.info(f"[i] Challenge zaman aşımından dolayı iptal edildi: {challenge['id']}")
+                    logger.info(f"[i] Challenge zaman aşımından dolayı iptal edildi: {challenge_id}")
                     
+                    # Hub kanalına bilgilendirici mesaj gönder
                     hub_channel = challenge.get("hub_channel_id")
                     if hub_channel:
-                        self.chat.post_message(
-                            channel=hub_channel,
-                            text=f"⏰ Bir challenge yeterli katılımcı sayısına ulaşamadığı için zaman aşımı nedeniyle iptal edildi."
-                        )
+                        try:
+                            timeout_text = (
+                                "⏰ *Challenge İptal Edildi (Yetersiz Katılımcı)*\n\n"
+                                f"📊 Katılımcı sayısı: *{participant_count}/{team_size}*\n"
+                                "Takım süresi içinde dolmadığı için challenge otomatik olarak iptal edildi.\n\n"
+                                "💡 İstersen tekrar `/challenge start` ile yeni bir challenge başlatabilirsin."
+                            )
+                            self.chat.post_message(
+                                channel=hub_channel,
+                                text="⏰ Challenge iptal edildi (yetersiz katılımcı).",
+                                blocks=[
+                                    {
+                                        "type": "section",
+                                        "text": {
+                                            "type": "mrkdwn",
+                                            "text": timeout_text,
+                                        },
+                                    }
+                                ],
+                            )
+                        except Exception as e:
+                            logger.warning(f"[!] Zaman aşımı iptal mesajı gönderilemedi: {e}")
+
+                    # Challenge sahibine DM ile haber ver
+                    creator_id = challenge.get("creator_id")
+                    if creator_id:
+                        try:
+                            dm_channel = self.conv.open_conversation([creator_id])
+                            if dm_channel and dm_channel.get("channel"):
+                                dm_id = dm_channel["channel"]["id"]
+                                dm_text = (
+                                    "⏰ *Challenge İptal Edildi*\n\n"
+                                    "Başlattığın challenge, süre içinde yeterli katılımcıya ulaşamadığı için "
+                                    "otomatik olarak iptal edildi.\n\n"
+                                    f"📊 Katılımcı sayısı: *{participant_count}/{team_size}*\n\n"
+                                    "İstediğin zaman yeniden `/challenge start` komutuyla yeni bir challenge açabilirsin. 🙌"
+                                )
+                                self.chat.post_message(channel=dm_id, text=dm_text)
+                        except Exception as e:
+                            logger.warning(f"[!] Creator'a iptal DM'i gönderilemedi: {e}")
             
             if cancelled_count > 0:
                 logger.info(f"[+] Toplam {cancelled_count} challenge zaman aşımına uğratıldı.")

@@ -13,6 +13,10 @@ class ChallengeEvaluatorRepository(BaseRepository):
     def get_by_evaluation(self, evaluation_id: str) -> List[Dict[str, Any]]:
         """Değerlendirmeye ait tüm değerlendiricileri getirir."""
         return self.list(filters={"evaluation_id": evaluation_id})
+    
+    def list_by_evaluation(self, evaluation_id: str) -> List[Dict[str, Any]]:
+        """Değerlendirmeye ait tüm değerlendiricileri getirir (alias)."""
+        return self.get_by_evaluation(evaluation_id)
 
     def get_by_evaluation_and_user(
         self, 
