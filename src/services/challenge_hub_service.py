@@ -462,6 +462,16 @@ class ChallengeHubService:
                     )
                 except Exception as e:
                     logger.debug(f"[i] Hub kanalına mesaj gönderilemedi: {e}")
+            
+            # 11. Canvas'ı güncelle (yeni kişi katıldığında takım bilgisi güncellensin)
+            try:
+                if self.evaluation_service and not challenge_started:
+                    # Challenge henüz başlamamışsa canvas'ı güncelle (recruiting durumunda)
+                    # Challenge başladıysa zaten _start_challenge içinde güncelleniyor
+                    await self.evaluation_service.update_challenge_canvas(challenge_id)
+                    logger.debug(f"[i] Canvas güncellendi (yeni katılımcı): {user_id}")
+            except Exception as e:
+                logger.warning(f"[!] Katılım sonrası canvas güncellenemedi: {e}")
 
             # Kullanıcıya dönüş mesajı
             remaining = challenge['team_size'] - participant_count
