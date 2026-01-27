@@ -8,7 +8,7 @@ import requests
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 from src.core.logger import logger
-from src.commands import ChatManager, ConversationManager, CanvasManager
+from src.commands import ChatManager, ConversationManager, CanvasManager, UserManager
 from src.repositories import (
     ChallengeEvaluationRepository,
     ChallengeEvaluatorRepository,
@@ -33,11 +33,13 @@ class ChallengeEvaluationService:
         participant_repo: ChallengeParticipantRepository,
         stats_repo: UserChallengeStatsRepository,
         cron_client: CronClient,
-        canvas_manager: CanvasManager = None
+        canvas_manager: CanvasManager = None,
+        user_manager: UserManager = None
     ):
         self.chat = chat_manager
         self.conv = conv_manager
         self.canvas = canvas_manager
+        self.user_manager = user_manager
         self.evaluation_repo = evaluation_repo
         self.evaluator_repo = evaluator_repo
         self.hub_repo = hub_repo
@@ -127,7 +129,26 @@ class ChallengeEvaluationService:
                 if participant_ids:
                     # İlk 3 kişiyi göster
                     shown_users = participant_ids[:3]
-                    user_mentions = ", ".join(f"<@{uid}>" for uid in shown_users)
+                    
+                    # Kullanıcı isimlerini al (Canvas'ta mention'lar düzgün görünmüyor, isim kullan)
+                    user_names = []
+                    for uid in shown_users:
+                        try:
+                            if self.user_manager:
+                                user_info = self.user_manager.get_user_info(uid)
+                                # real_name veya display_name kullan
+                                name = user_info.get("real_name") or user_info.get("name", uid)
+                                # Canvas'ta @mention formatı kullan
+                                user_names.append(f"@{name}")
+                            else:
+                                # UserManager yoksa ID kullan
+                                user_names.append(f"<@{uid}>")
+                        except Exception as e:
+                            logger.debug(f"[i] Kullanıcı bilgisi alınamadı ({uid}): {e}")
+                            # Hata durumunda ID kullan
+                            user_names.append(f"<@{uid}>")
+                    
+                    user_mentions = ", ".join(user_names)
                     remaining = participant_count - len(shown_users)
                     
                     if remaining > 0:

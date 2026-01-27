@@ -175,7 +175,7 @@ challenge_evaluation_service = ChallengeEvaluationService(
     challenge_evaluation_repo, challenge_evaluator_repo,
     challenge_hub_repo, challenge_participant_repo,
     user_challenge_stats_repo, cron_client,
-    canvas_manager
+    canvas_manager, user_manager
 )
 challenge_hub_service = ChallengeHubService(
     chat_manager, conv_manager, user_manager,
