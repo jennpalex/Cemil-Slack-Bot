@@ -146,45 +146,70 @@ class ChallengeEvaluationService:
 
             header_text = f"📌 *{theme}* – *{project_name}*"
 
-            # Kompakt canvas mesajı - Section block kullan (fields yerine text kullan)
+            # Tablo formatında canvas mesajı
             blocks = [
                 {
-                    "type": "section",
+                    "type": "header",
                     "text": {
-                        "type": "mrkdwn",
-                        "text": (
-                            f"{header_text}\n"
-                            f"*Durum:* {status_label}\n"
-                            f"*Bitiş:* {deadline_text}\n"
-                            f"*Takım:* {participants_text[:100]}{'...' if len(participants_text) > 100 else ''}"
-                        )
+                        "type": "plain_text",
+                        "text": f"{theme} – {project_name}",
+                        "emoji": True
                     }
+                },
+                {
+                    "type": "divider"
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*📊 Durum:*\n{status_label}"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*⏰ Bitiş:*\n{deadline_text}"
+                        }
+                    ]
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*👥 Takım:*\n{participants_text[:150]}{'...' if len(participants_text) > 150 else ''}"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*📝 Proje:*\n{project_desc[:100]}{'...' if len(project_desc) > 100 else ''}"
+                        }
+                    ]
                 },
             ]
             
             # GitHub bilgisi varsa ekle
             if github_url:
                 blocks.append({
-                    "type": "context",
-                    "elements": [
+                    "type": "section",
+                    "fields": [
                         {
                             "type": "mrkdwn",
-                            "text": f"🔗 {github_status[:80]}{'...' if len(github_status) > 80 else ''}",
+                            "text": f"*🔗 GitHub:*\n{github_status[:100]}{'...' if len(github_status) > 100 else ''}"
                         }
-                    ],
+                    ]
                 })
             
             # Değerlendirme bilgisi varsa ekle
             if evaluation:
-                eval_line = f"📊 {eval_status or 'bilinmiyor'} | Oylar: ✅{true_votes} ❌{false_votes}"
+                eval_line = f"*📊 Değerlendirme:*\n{eval_status or 'bilinmiyor'} | Oylar: ✅{true_votes} ❌{false_votes}"
                 blocks.append({
-                    "type": "context",
-                    "elements": [
+                    "type": "section",
+                    "fields": [
                         {
                             "type": "mrkdwn",
-                            "text": eval_line,
+                            "text": eval_line
                         }
-                    ],
+                    ]
                 })
             
             # Debug: Blocks yapısını logla
