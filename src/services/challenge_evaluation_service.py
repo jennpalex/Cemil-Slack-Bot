@@ -899,13 +899,6 @@ class ChallengeEvaluationService:
 
             logger.info(f"[+] Oy kaydedildi: {user_id} | Vote: {vote} | Evaluation: {evaluation_id}")
 
-            # Canvas'ı güncelle (oy sayısı değişti)
-            try:
-                await self.update_challenge_canvas(evaluation.get("challenge_hub_id"))
-                logger.debug(f"[i] Canvas güncellendi (oy verildikten sonra): {user_id}")
-            except Exception as e:
-                logger.warning(f"[!] Oy sonrası canvas güncellenemedi: {e}")
-
             # 3 kişi oy verdiyse kontrol et
             total_votes = votes["true"] + votes["false"]
             if total_votes >= 3:
@@ -1075,12 +1068,6 @@ class ChallengeEvaluationService:
                 "github_repo_url": github_url,
                 "github_repo_public": 1 if is_public else 0
             })
-
-            # Challenge canvas/özet mesajını güncelle
-            try:
-                await self.update_challenge_canvas(evaluation["challenge_hub_id"])
-            except Exception as e:
-                logger.warning(f"[!] GitHub linki sonrasında canvas güncellenemedi: {e}")
 
             # Eğer repo public ve 3 kişi oy verdiyse admin onayı iste
             if is_public:
@@ -1476,12 +1463,6 @@ class ChallengeEvaluationService:
                 except Exception as e:
                     logger.warning(f"[!] Değerlendirme kanalı mesaj gönderimi veya arşivleme planı hatası: {e}")
 
-            # Canvas/özet mesajını son durum ile güncelle
-            try:
-                await self.update_challenge_canvas(challenge_id)
-            except Exception as e:
-                logger.warning(f"[!] Finalize sonrası canvas güncellenemedi: {e}")
-
             logger.info(f"[+] Değerlendirme finalize edildi: {evaluation_id} | Sonuç: {final_result}")
 
         except Exception as e:
@@ -1557,12 +1538,6 @@ class ChallengeEvaluationService:
                         logger.info(f"[+] Force success: Puan ve başarı güncellendi: {user_id}")
                 except Exception as e:
                     logger.error(f"[X] Force success istatistikleri güncellenirken hata: {e}")
-
-            # Canvas/özet mesajını güncelle
-            try:
-                await self.update_challenge_canvas(challenge_id)
-            except Exception as e:
-                logger.warning(f"[!] Force complete sonrası canvas güncellenemedi: {e}")
 
             # Bildirim gönder (hem evaluation hem challenge kanallarına)
             eval_channel_id = evaluation.get("evaluation_channel_id")
