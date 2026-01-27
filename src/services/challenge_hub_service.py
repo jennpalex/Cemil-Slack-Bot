@@ -115,7 +115,7 @@ class ChallengeHubService:
                         cursor = conn.cursor()
                         cursor.execute("""
                             SELECT * FROM challenge_hubs
-                            WHERE creator_id = ? AND status IN ('recruiting', 'active')
+                            WHERE creator_id = ? AND status IN ('recruiting', 'active', 'evaluating')
                         """, (creator_id,))
                         rows = cursor.fetchall()
                         creator_challenges = [dict(row) for row in rows]
@@ -356,7 +356,7 @@ class ChallengeHubService:
                         cursor = conn.cursor()
                         cursor.execute("""
                             SELECT * FROM challenge_hubs
-                            WHERE creator_id = ? AND status IN ('recruiting', 'active')
+                            WHERE creator_id = ? AND status IN ('recruiting', 'active', 'evaluating')
                         """, (user_id,))
                         rows = cursor.fetchall()
                         creator_challenges = [dict(row) for row in rows]

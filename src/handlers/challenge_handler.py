@@ -313,7 +313,7 @@ def setup_challenge_handlers(
                         cursor = conn.cursor()
                         sql = """
                             SELECT * FROM challenge_hubs
-                            WHERE creator_id = ? AND status IN ('recruiting', 'active')
+                            WHERE creator_id = ? AND status IN ('recruiting', 'active', 'evaluating')
                             ORDER BY created_at DESC
                         """
                         cursor.execute(sql, (user_id,))

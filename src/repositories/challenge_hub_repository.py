@@ -39,7 +39,7 @@ class ChallengeHubRepository(BaseRepository):
                 cursor = conn.cursor()
                 sql = """
                     SELECT * FROM challenge_hubs
-                    WHERE status IN ('recruiting', 'active')
+                    WHERE status IN ('recruiting', 'active', 'evaluating')
                     ORDER BY created_at DESC
                 """
                 cursor.execute(sql)

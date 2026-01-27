@@ -45,7 +45,7 @@ class ChallengeParticipantRepository(BaseRepository):
                     INNER JOIN challenge_participants cp 
                         ON ch.id = cp.challenge_hub_id
                     WHERE cp.user_id = ? 
-                        AND ch.status IN ('recruiting', 'active')
+                        AND ch.status IN ('recruiting', 'active', 'evaluating')
                 """
                 cursor.execute(sql, (user_id,))
                 rows = cursor.fetchall()
