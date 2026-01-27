@@ -112,14 +112,9 @@ def main():
     logger.info("[>] Veritabanı kontrol ediliyor...")
     db_client.init_db()
     
-    # Challenge tablolarını temizle (startup'ta)
-    if NON_INTERACTIVE:
-        choice = "h"
-    else:
-        print("\n[?] Challenge tablolarını temizlemek ister misiniz? (e/h): ", end="")
-        choice = input().lower().strip()
-    if choice == 'e':
-        logger.info("[>] Challenge tabloları temizleniyor...")
+    # Challenge tablolarını temizle (startup'ta) - Settings'e bağlı
+    if settings.db_clean_on_startup:
+        logger.info("[>] Challenge tabloları TEMİZLENİYOR (Settings gereği)...")
         deleted_counts = db_client.clean_challenge_tables()
         if deleted_counts:
             total = sum(deleted_counts.values())
@@ -127,7 +122,7 @@ def main():
         else:
             print("[i] Challenge tabloları zaten temizdi.")
     else:
-        logger.info("[i] Challenge tabloları temizlenmedi.")
+        logger.info("[i] Challenge tabloları temizlenmedi (Settings: False).")
     
     # --- CSV Veri İçe Aktarma Kontrolü ---
     # Klasörlerin varlığını kontrol et
@@ -147,13 +142,8 @@ def main():
             print(f"[+] Şablon oluşturuldu: {CSV_PATH}")
             print(f"[i] Not: Şablon içinde örnek veri bulunmaktadır.")
             
-            if NON_INTERACTIVE:
-                choice = "h"
-            else:
-                choice = input("Bu şablonu şimdi kullanmak ister misiniz? (e/h): ").lower().strip()
-            
-            if choice == 'e':
-                print("[i] Veriler işleniyor...")
+            if settings.db_import_initial_users:
+                print("[i] Veriler işleniyor (Settings gereği)...")
                 try:
                     count = user_repo.import_from_csv(CSV_PATH)
                     print(f"[+] Başarılı! {count} kullanıcı eklendi.")
@@ -161,20 +151,15 @@ def main():
                     logger.error(f"[X] Import hatası: {e}")
                     print("Hata oluştu, logları kontrol edin.")
             else:
-                print("[i] Şablon atlandı. Dosyayı doldurup botu yeniden başlattığınızda kullanabilirsiniz.")
+                print(f"[i] Şablon oluşturuldu ama içe aktarılmadı. .env dosyasından DB_IMPORT_INITIAL_USERS=True yapabilirsiniz.")
         except Exception as e:
             logger.error(f"[X] Şablon oluşturma hatası: {e}")
     else:
         # Dosya var, kullanıp kullanmayacağını sor
         print(f"\n[?] '{CSV_PATH}' dosyası bulundu.")
         
-        if NON_INTERACTIVE:
-            choice = "h"
-        else:
-            choice = input("Bu CSV dosyasındaki verileri kullanmak ister misiniz? (e/h): ").lower().strip()
-        
-        if choice == 'e':
-            print("[i] Veriler işleniyor...")
+        if settings.db_import_initial_users:
+            print("[i] CSV verileri işleniyor (Settings gereği)...")
             try:
                 count = user_repo.import_from_csv(CSV_PATH)
                 print(f"[+] Başarılı! {count} kullanıcı eklendi.")
@@ -182,7 +167,7 @@ def main():
                 logger.error(f"[X] Import hatası: {e}")
                 print("Hata oluştu, logları kontrol edin.")
         else:
-            print("[i] CSV dosyası atlandı, mevcut veritabanı ile devam ediliyor.")
+            print("[i] CSV dosyası bulundu ama atlandı (Settings: False).")
     # -------------------------------------
 
     # 2. Cron
@@ -196,13 +181,8 @@ def main():
         # Mevcut veriler var
         print(f"\n[?] Vektör veritabanı bulundu (mevcut veriler: {len(vector_client.documents) if vector_client.documents else 0} parça).")
         
-        if NON_INTERACTIVE:
-            choice = "h"
-        else:
-            choice = input("Vektör veritabanını yeniden oluşturmak ister misiniz? (e/h): ").lower().strip()
-        
-        if choice == 'e':
-            print("[i] Vektör veritabanı yeniden oluşturuluyor...")
+        if settings.kb_rebuild_index:
+            print("[i] Vektör veritabanı yeniden oluşturuluyor (Settings gereği)...")
             logger.info("[>] Bilgi Küpü indeksleniyor...")
             asyncio.run(knowledge_service.process_knowledge_base())
             print("[+] Vektör veritabanı başarıyla güncellendi.")
@@ -236,22 +216,9 @@ def main():
     print("="*60)
     
     if startup_channel:
-        print(f"\n[✓] Başlangıç kanalı bulundu: {startup_channel}")
-    else:
-        print("\n[!] SLACK_STARTUP_CHANNEL tanımlı değil.")
-        print("[i] Başlangıç mesajı göndermek için .env dosyasına SLACK_STARTUP_CHANNEL ekleyin.")
-        startup_channel = None
-    
-    if startup_channel:
-        print(f"\n[?] Başlangıç mesajı (welcome) Slack kanalına gönderilsin mi?")
-        print(f"    Kanal: {startup_channel}")
-        
-        if NON_INTERACTIVE:
-            choice = "h"
-        else:
-            choice = input("    Cevap (e/h): ").lower().strip()
-        
-        if choice == 'e':
+        print(f"\n[✓] Başlangıç kanalı: {startup_channel}")
+        if settings.slack_send_welcome_message:
+            print(f"    [>] Başlangıç mesajı GÖNDERİLİYOR (Settings: True)...")
             try:
                 startup_text = (
                     "👋 *Merhabalar! Ben Cemil, Yapay Zeka Akademisi'nin yardımcı asistanıyım!* ☀️\n\n"
@@ -463,11 +430,9 @@ def main():
                 logger.error(f"[X] Başlangıç mesajı gönderilemedi: {e}")
                 print(f"[X] Başlangıç mesajı gönderilemedi: {e}")
         else:
-            print("[i] Başlangıç mesajı atlandı.")
-            logger.info("[i] Başlangıç mesajı kullanıcı tarafından atlandı.")
+            print("[i] Başlangıç mesajı GÖNDERİLMEDİ (Settings: False).")
     else:
-        print("[i] Başlangıç kanalı tanımlı olmadığı için mesaj gönderilemedi.")
-        logger.info("[i] SLACK_STARTUP_CHANNEL tanımlı değil, başlangıç mesajı gönderilmeyecek.")
+        print("[i] SLACK_STARTUP_CHANNEL tanımlı değil, başlangıç mesajı atlandı.")
 
     print("\n" + "="*60)
     print("           BOT ÇALIŞIYOR - CTRL+C ile durdurun")

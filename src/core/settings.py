@@ -55,6 +55,12 @@ class BotSettings(BaseSettings):
     # Knowledge Base Ayarları
     knowledge_base_path: str = Field("knowledge_base", description="Bilgi küpü klasör yolu")
     
+    # Başlangıç Senaryo Ayarları (Soruları Otomatize Etmek İçin)
+    db_clean_on_startup: bool = Field(False, description="Başlangıçta challenge tablolarını temizle")
+    db_import_initial_users: bool = Field(False, description="Başlangıçta data/initial_users.csv dosyasını içe aktar")
+    kb_rebuild_index: bool = Field(False, description="Başlangıçta bilgi küpü vektör indeksini yeniden oluştur")
+    slack_send_welcome_message: bool = Field(False, description="Sanal ortamda hoşgeldin mesajı gönder")
+    
     @field_validator('log_level')
     @classmethod
     def validate_log_level(cls, v: str) -> str:
