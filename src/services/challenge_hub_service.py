@@ -926,16 +926,16 @@ class ChallengeHubService:
             except Exception as e:
                 logger.error(f"[X] Challenge status güncellenemedi: {e}")
 
-            # Kanalı 4 saat sonra arşivlemek üzere planla
+            # Kanalı 3 saat sonra arşivlemek üzere planla
             try:
-                delay_hours = 4
+                delay_hours = 3
                 self.cron.add_once_job(
                     func=self._archive_channel_delayed,
                     delay_minutes=delay_hours * 60,
                     job_id=f"archive_challenge_{challenge_id}",
                     args=[challenge_id, channel_id]
                 )
-                logger.info(f"[+] Challenge kanalı 4 saat sonra arşivlenmek üzere planlandı | ID: {challenge_id}")
+                logger.info(f"[+] Challenge kanalı 3 saat sonra arşivlenmek üzere planlandı | ID: {challenge_id}")
             except Exception as e:
                 logger.warning(f"[!] Challenge kanalı arşivleme görevi planlanamadı: {e}")
             

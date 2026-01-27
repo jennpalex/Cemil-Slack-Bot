@@ -730,6 +730,37 @@ class ChallengeEvaluationService:
                             logger.info(f"[i] Admin onay butonu gönderildi | Evaluation: {evaluation_id}")
                         except Exception as e:
                             logger.warning(f"[!] Admin onay butonu gönderilemedi: {e}")
+                    
+                    # Challenge kanalına da bilgilendirme mesajı gönder
+                    challenge_id = evaluation.get("challenge_hub_id")
+                    if challenge_id:
+                        challenge = self.hub_repo.get(challenge_id)
+                        challenge_channel_id = challenge.get("challenge_channel_id") if challenge else None
+                        
+                        if challenge_channel_id:
+                            try:
+                                self.chat.post_message(
+                                    channel=challenge_channel_id,
+                                    text="✅ Değerlendirme tamamlandı, admin onayı bekleniyor...",
+                                    blocks=[
+                                        {
+                                            "type": "section",
+                                            "text": {
+                                                "type": "mrkdwn",
+                                                "text": (
+                                                    "✅ *Challenge Değerlendirmesi Tamamlandı!*\n\n"
+                                                    f"📊 Jüri Oyları: True={votes['true']}, False={votes['false']}\n"
+                                                    f"🔗 GitHub Repo: {github_url}\n\n"
+                                                    "👤 *Admin onayı bekleniyor...*\n"
+                                                    "Sonuç çok yakında açıklanacak! ⏳"
+                                                )
+                                            }
+                                        }
+                                    ]
+                                )
+                                logger.info(f"[+] Challenge kanalına admin onay bekleme mesajı gönderildi | Channel: {challenge_channel_id}")
+                            except Exception as e:
+                                logger.warning(f"[!] Challenge kanalına bilgilendirme gönderilemedi: {e}")
                 else:
                     # Repo yok veya private → Bilgilendirme mesajı gönder
                     if eval_channel_id:
@@ -1111,11 +1142,43 @@ class ChallengeEvaluationService:
                 challenge_channel_id = challenge.get("challenge_channel_id")
                 if challenge_channel_id:
                     try:
+                        # Admin onay/red bilgisi ekle
+                        admin_decision_text = ""
+                        if admin_approval == "approved":
+                            admin_decision_text = "\n\n👤 *Admin Kararı:* ✅ Onaylandı"
+                        elif admin_approval == "rejected":
+                            admin_decision_text = "\n\n👤 *Admin Kararı:* ❌ Reddedildi"
+                        
+                        # Kanal kapanma zamanını hesapla (3 saat sonra)
+                        close_time = (datetime.now() + timedelta(hours=3)).strftime("%d/%m/%Y %H:%M")
+                        
+                        challenge_result_blocks = result_blocks + [
+                            {
+                                "type": "divider"
+                            },
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": (
+                                        f"⏳ *Önemli Bilgilendirme:*\n"
+                                        f"Bu kanal *{close_time}*'de (3 saat sonra) otomatik olarak arşivlenecektir.\n"
+                                        f"Lütfen önemli mesajlarınızı bu süre içinde kontrol edin. 📋"
+                                    )
+                                }
+                            }
+                        ]
+                        
+                        # İlk section'a admin kararını ekle
+                        if admin_decision_text:
+                            challenge_result_blocks[0]["text"]["text"] += admin_decision_text
+                        
                         self.chat.post_message(
                             channel=challenge_channel_id,
                             text=result_message,
-                            blocks=result_blocks
+                            blocks=challenge_result_blocks
                         )
+                        logger.info(f"[+] Challenge kanalına sonuç mesajı gönderildi: {challenge_channel_id}")
                     except Exception as e:
                         logger.warning(f"[!] Challenge kanalına sonuç mesajı gönderilemedi (kanal arşivlenmiş olabilir): {e}")
             # Değerlendirme kanalına bitiş mesajı gönder ve 1 saat sonra kapat
@@ -1243,7 +1306,7 @@ class ChallengeEvaluationService:
             except Exception as e:
                 logger.warning(f"[!] Force complete sonrası canvas güncellenemedi: {e}")
 
-            # Bildirim gönder
+            # Bildirim gönder (hem evaluation hem challenge kanallarına)
             eval_channel_id = evaluation.get("evaluation_channel_id")
             if eval_channel_id:
                 try:
@@ -1278,6 +1341,46 @@ class ChallengeEvaluationService:
                     logger.info(f"[+] Değerlendirme kanalı zorla kapatma sonrası 1 saat sonra arşivlenecek | ID: {evaluation_id}")
                 except Exception as e:
                     logger.warning(f"[!] Force complete mesaj/arşiv planlama hatası: {e}")
+            
+            # Challenge kanalına da bilgilendirme mesajı gönder
+            challenge = self.hub_repo.get(challenge_id)
+            if challenge:
+                challenge_channel_id = challenge.get("challenge_channel_id")
+                if challenge_channel_id:
+                    try:
+                        # Challenge kanalı kapanma zamanı (3 saat sonra)
+                        challenge_close_time = (datetime.now() + timedelta(hours=3)).strftime("%d/%m/%Y %H:%M")
+                        
+                        self.chat.post_message(
+                            channel=challenge_channel_id,
+                            text=result_message,
+                            blocks=[
+                                {
+                                    "type": "section",
+                                    "text": {
+                                        "type": "mrkdwn", 
+                                        "text": f"{result_message}\n\n👤 *Admin Kararı:* <@{admin_user_id}> tarafından manuel olarak sonuçlandırıldı"
+                                    }
+                                },
+                                {
+                                    "type": "divider"
+                                },
+                                {
+                                    "type": "section",
+                                    "text": {
+                                        "type": "mrkdwn",
+                                        "text": (
+                                            f"⏳ *Önemli Bilgilendirme:*\n"
+                                            f"Bu kanal *{challenge_close_time}*'de (3 saat sonra) otomatik olarak arşivlenecektir.\n"
+                                            f"Lütfen önemli mesajlarınızı bu süre içinde kontrol edin. 📋"
+                                        )
+                                    }
+                                }
+                            ]
+                        )
+                        logger.info(f"[+] Force complete: Challenge kanalına sonuç mesajı gönderildi: {challenge_channel_id}")
+                    except Exception as e:
+                        logger.warning(f"[!] Force complete: Challenge kanalına mesaj gönderilemedi: {e}")
 
             return {
                 "success": True, 
